@@ -8,7 +8,7 @@ Comma-separates symbol names it encounters multipple definitions of and responds
 
 Example output:
 ```sh
-$ ldd-sym . -path /bin/setcap
+$ ldd-sym -path /bin/setcap
 __libc_start_main: libc.so.6
 __errno_location: libc.so.6
 __read_chk: libc.so.6

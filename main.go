@@ -12,11 +12,11 @@ import (
 	"strings"
 )
 
-var (
+type parseOptions struct {
 	getFunc   bool
 	getObject bool
 	getOther  bool
-)
+}
 
 type baseInfo struct {
 	syms    []elf.Symbol
@@ -26,7 +26,7 @@ type baseInfo struct {
 	symnameToSonames map[string][]string
 }
 
-func parseBase(elfPath string) baseInfo {
+func parseBase(elfPath string, options parseOptions) baseInfo {
 	f := check1(elf.Open(elfPath))
 	defer f.Close()
 
@@ -37,7 +37,7 @@ func parseBase(elfPath string) baseInfo {
 		isFunc := stt == elf.STT_FUNC
 		isObj := stt == elf.STT_OBJECT
 		// does not match argument filters
-		if !((getFunc && isFunc) || (getObject && isObj) || (getOther && !(isFunc || isObj))) {
+		if !((options.getFunc && isFunc) || (options.getObject && isObj) || (options.getOther && !(isFunc || isObj))) {
 			continue
 		}
 		// defined within this file
@@ -151,10 +151,11 @@ func fileExists(path string) bool {
 
 func main() {
 	var elfPath string
+	var options parseOptions
 	flag.StringVar(&elfPath, "path", "", "path to file")
-	flag.BoolVar(&getFunc, "funcs", true, "track functions")
-	flag.BoolVar(&getObject, "objects", true, "track objects")
-	flag.BoolVar(&getOther, "other", false, "track other symbols")
+	flag.BoolVar(&options.getFunc, "funcs", true, "track functions")
+	flag.BoolVar(&options.getObject, "objects", true, "track objects")
+	flag.BoolVar(&options.getOther, "other", false, "track other symbols")
 	flag.Parse()
 
 	if elfPath == "" {
@@ -162,12 +163,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	if !(getFunc || getObject || getOther) {
+	if !(options.getFunc || options.getObject || options.getOther) {
 		fmt.Println("all symbol types disabled")
 		os.Exit(1)
 	}
 
-	base := parseBase(elfPath)
+	base := parseBase(elfPath, options)
 
 	var searchdirs []string
 	if base.runpath != "" {

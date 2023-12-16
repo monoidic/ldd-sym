@@ -36,9 +36,16 @@ func parseBase(elfPath string) baseInfo {
 		stt := elf.ST_TYPE(sym.Info)
 		isFunc := stt == elf.STT_FUNC
 		isObj := stt == elf.STT_OBJECT
-		if (getFunc && isFunc) || (getObject && isObj) || (getOther && !(isFunc || isObj)) {
-			syms = append(syms, sym)
+		// does not match argument filters
+		if !((getFunc && isFunc) || (getObject && isObj) || (getOther && !(isFunc || isObj))) {
+			continue
 		}
+		// defined within this file
+		if sym.Section != elf.SHN_UNDEF {
+			continue
+		}
+
+		syms = append(syms, sym)
 	}
 
 	return baseInfo{

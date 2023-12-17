@@ -87,9 +87,7 @@ func readRunPath(f *elf.File) []string {
 	return nil
 }
 
-var seenConfs = map[string]bool{}
-
-func parseLdSoConfFile(filename string) []string {
+func parseLdSoConfFile(filename string, seenConfs map[string]bool) []string {
 	if seenConfs[filename] {
 		return nil
 	}
@@ -104,7 +102,7 @@ func parseLdSoConfFile(filename string) []string {
 		}
 		if bytes.HasPrefix(line, []byte("include")) {
 			for _, filename := range check1(filepath.Glob(filepath.Join("/etc", string(line[8:])))) {
-				out = append(out, parseLdSoConfFile(filename)...)
+				out = append(out, parseLdSoConfFile(filename, seenConfs)...)
 			}
 		} else {
 			out = append(out, string(line))
@@ -115,13 +113,13 @@ func parseLdSoConfFile(filename string) []string {
 	return out
 }
 
-var walkedSonames = map[string]bool{}
-
 func (base *baseInfo) getSymMatches(searchdirs []string) {
 	base.symnameToSonames = make(map[string][]string, len(base.syms))
 	for _, sym := range base.syms {
 		base.symnameToSonames[sym.Name] = nil
 	}
+
+	walkedSonames := make(map[string]bool)
 
 	var sonameStack stack[string]
 	sonameStack.pushMultipleRev(base.sonames)
@@ -221,7 +219,7 @@ func main() {
 
 	searchdirs = append(searchdirs, base.runpath...)
 	searchdirs = append(searchdirs, "/lib64", "/usr/lib64")
-	searchdirs = append(searchdirs, parseLdSoConfFile("/etc/ld.so.conf")...)
+	searchdirs = append(searchdirs, parseLdSoConfFile("/etc/ld.so.conf", map[string]bool{})...)
 
 	base.getSymMatches(searchdirs)
 

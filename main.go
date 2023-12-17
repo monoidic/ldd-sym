@@ -119,7 +119,10 @@ func (base *baseInfo) getSymMatches(searchdirs []string) {
 		base.symnameToSonames[sym.Name] = nil
 	}
 
-	walkedSonames := make(map[string]bool)
+	seenSonames := make(map[string]bool)
+	for _, soname := range base.sonames {
+		seenSonames[soname] = true
+	}
 
 	var sonameStack stack[string]
 	sonameStack.pushMultipleRev(base.sonames)
@@ -130,15 +133,14 @@ func (base *baseInfo) getSymMatches(searchdirs []string) {
 			break
 		}
 
-		if walkedSonames[soname] {
-			continue
-		}
-
-		walkedSonames[soname] = true
-
 		for _, path := range getSonamePaths(soname, searchdirs) {
 			syms, sonames := getSyms(path)
-			sonameStack.pushMultipleRev(sonames)
+			for _, soname := range sonames {
+				if !seenSonames[soname] {
+					sonameStack.push(soname)
+					seenSonames[soname] = true
+				}
+			}
 
 			for _, sym := range syms {
 				if sl, exists := base.symnameToSonames[sym.Name]; exists {

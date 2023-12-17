@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -21,7 +22,7 @@ type parseOptions struct {
 type baseInfo struct {
 	syms    []elf.Symbol
 	sonames []string
-	runpath string
+	runpath []string
 
 	symnameToSonames map[string][]string
 }
@@ -51,20 +52,39 @@ func parseBase(elfPath string, options parseOptions) baseInfo {
 	return baseInfo{
 		syms:    syms,
 		sonames: check1(f.DynString(elf.DT_NEEDED)),
-		runpath: getRunPath(f),
+		runpath: getRunPath(f, elfPath),
 	}
 }
 
-func getRunPath(f *elf.File) string {
+func getRunPath(f *elf.File, elfPath string) []string {
+	dirs := readRunPath(f)
+	if dirs == nil {
+		return dirs
+	}
+
+	base := filepath.Dir(elfPath)
+
+	for i, dir := range dirs {
+		if !strings.Contains(dir, "$ORIGIN") {
+			continue
+		}
+		dirs[i] = check1(filepath.Abs(strings.Replace(dir, "$ORIGIN", base, -1)))
+	}
+	return dirs
+}
+
+func readRunPath(f *elf.File) []string {
 	runpath, err := f.DynString(elf.DT_RUNPATH)
-	if err != nil {
-		return runpath[0]
+	if err == nil && len(runpath) != 0 {
+		return strings.Split(runpath[0], ":")
 	}
+
 	runpath, err = f.DynString(elf.DT_RPATH)
-	if err != nil {
-		return runpath[0]
+	if err == nil && len(runpath) != 0 {
+		return strings.Split(runpath[0], ":")
 	}
-	return ""
+
+	return nil
 }
 
 var seenConfs = map[string]bool{}
@@ -95,23 +115,45 @@ func parseLdSoConfFile(filename string) []string {
 	return out
 }
 
+var walkedSonames = map[string]bool{}
+
 func (base *baseInfo) getSymMatches(searchdirs []string) {
 	base.symnameToSonames = make(map[string][]string, len(base.syms))
 	for _, sym := range base.syms {
 		base.symnameToSonames[sym.Name] = nil
 	}
 
-	for _, soname := range base.sonames {
-		path := getSonamePath(soname, searchdirs)
-		for _, sym := range getSyms(path) {
-			if sl, exists := base.symnameToSonames[sym.Name]; exists {
-				base.symnameToSonames[sym.Name] = append(sl, soname)
+	var sonameStack stack[string]
+	sonameStack.pushMultipleRev(base.sonames)
+
+	for {
+		soname, success := sonameStack.pop()
+		if !success {
+			break
+		}
+
+		if walkedSonames[soname] {
+			continue
+		}
+
+		walkedSonames[soname] = true
+
+		for _, path := range getSonamePaths(soname, searchdirs) {
+			syms, sonames := getSyms(path)
+			sonameStack.pushMultipleRev(sonames)
+
+			for _, sym := range syms {
+				if sl, exists := base.symnameToSonames[sym.Name]; exists {
+					if !slices.Contains(sl, soname) {
+						base.symnameToSonames[sym.Name] = append(sl, soname)
+					}
+				}
 			}
 		}
 	}
 }
 
-func getSyms(path string) []elf.Symbol {
+func getSyms(path string) ([]elf.Symbol, []string) {
 	f := check1(elf.Open(path))
 	defer f.Close()
 
@@ -125,17 +167,20 @@ func getSyms(path string) []elf.Symbol {
 		}
 	}
 
-	return out
+	sonames := check1(f.DynString(elf.DT_NEEDED))
+
+	return out, sonames
 }
 
-func getSonamePath(soname string, searchdirs []string) string {
+func getSonamePaths(soname string, searchdirs []string) []string {
+	var ret []string
 	for _, dir := range searchdirs {
 		path := filepath.Join(dir, soname)
 		if fileExists(path) {
-			return path
+			ret = append(ret, path)
 		}
 	}
-	panic(fmt.Sprintf("cannot find SONAME=%q with searchdirs %#v", soname, searchdirs))
+	return ret
 }
 
 func fileExists(path string) bool {
@@ -163,6 +208,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	elfPath = check1(filepath.Abs(elfPath))
+
 	if !(options.getFunc || options.getObject || options.getOther) {
 		fmt.Println("all symbol types disabled")
 		os.Exit(1)
@@ -171,11 +218,11 @@ func main() {
 	base := parseBase(elfPath, options)
 
 	var searchdirs []string
-	if base.runpath != "" {
-		searchdirs = append(searchdirs, base.runpath)
-	}
+
+	searchdirs = append(searchdirs, base.runpath...)
 	searchdirs = append(searchdirs, "/lib64", "/usr/lib64")
 	searchdirs = append(searchdirs, parseLdSoConfFile("/etc/ld.so.conf")...)
+
 	base.getSymMatches(searchdirs)
 
 	for _, sym := range base.syms {
@@ -198,4 +245,30 @@ func check(err error) {
 func check1[T any](arg1 T, err error) T {
 	check(err)
 	return arg1
+}
+
+type stack[T any] struct {
+	l []T
+}
+
+func (s *stack[T]) pushMultipleRev(l []T) {
+	// reverse sorted order, to pop in "the right" order
+	slices.Reverse(l)
+	s.l = append(s.l, l...)
+}
+
+func (s *stack[T]) push(e T) {
+	s.l = append(s.l, e)
+}
+
+func (s *stack[T]) pop() (T, bool) {
+	var top T
+	size := len(s.l)
+	if size == 0 {
+		return top, false
+	}
+
+	top = s.l[size-1]
+	s.l = s.l[:size-1]
+	return top, true
 }

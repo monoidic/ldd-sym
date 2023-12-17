@@ -4,7 +4,7 @@ Basic utility to map symbol names to SONAMEs of libraries defining them.
 
 Only performs some rudimentary linker search path construction (parses `DT_RUNPATH`/`DT_RPATH` from file and performs basic `ld.so.conf` parsing).
 
-Comma-separates symbol names it encounters multipple definitions of and responds with "NO MATCHES" if no matches are found.
+Comma-separates symbol names it encounters multiple definitions of and responds with "NO MATCHES" if no matches are found.
 
 Example output:
 ```sh

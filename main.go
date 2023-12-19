@@ -25,6 +25,7 @@ type baseInfo struct {
 	runpath []string
 
 	symnameToSonames map[string][]string
+	unneededSonames []string
 }
 
 func parseBase(elfPath string, options parseOptions) baseInfo {
@@ -127,11 +128,15 @@ func (base *baseInfo) getSymMatches(searchdirs []string) {
 	var sonameStack stack[string]
 	sonameStack.pushMultipleRev(base.sonames)
 
+	var unneededSonames []string
+
 	for {
 		soname, success := sonameStack.pop()
 		if !success {
 			break
 		}
+
+		sonameNeeded := false
 
 		for _, path := range getSonamePaths(soname, searchdirs) {
 			syms, sonames := getSyms(path)
@@ -146,11 +151,18 @@ func (base *baseInfo) getSymMatches(searchdirs []string) {
 				if sl, exists := base.symnameToSonames[sym.Name]; exists {
 					if !slices.Contains(sl, soname) {
 						base.symnameToSonames[sym.Name] = append(sl, soname)
+						sonameNeeded = true
 					}
 				}
 			}
 		}
+
+		if !sonameNeeded {
+			unneededSonames = append(unneededSonames, soname)
+		}
 	}
+
+	base.unneededSonames = unneededSonames
 }
 
 func getSyms(path string) ([]elf.Symbol, []string) {
@@ -233,6 +245,10 @@ func main() {
 		} else {
 			fmt.Printf("%s: %s\n", sym, strings.Join(sonames, ", "))
 		}
+	}
+
+	if len(base.unneededSonames) > 0 {
+		fmt.Printf("\nUNNEEDED: %s\n", strings.Join(base.unneededSonames, ", "))
 	}
 }
 

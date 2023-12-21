@@ -28,13 +28,21 @@ type baseInfo struct {
 	unneededSonames  []string
 }
 
-func parseBase(elfPath string, options parseOptions) baseInfo {
-	f := check1(elf.Open(elfPath))
+func parseBase(elfPath string, options parseOptions) (*baseInfo, error) {
+	f, err := elf.Open(elfPath)
+	if err != nil {
+		return nil, err
+	}
 	defer f.Close()
 
 	var syms []elf.Symbol
 
-	for _, sym := range check1(f.DynamicSymbols()) {
+	dynSyms, err := f.DynamicSymbols()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, sym := range dynSyms {
 		stt := elf.ST_TYPE(sym.Info)
 		isFunc := stt == elf.STT_FUNC
 		isObj := stt == elf.STT_OBJECT
@@ -50,11 +58,11 @@ func parseBase(elfPath string, options parseOptions) baseInfo {
 		syms = append(syms, sym)
 	}
 
-	return baseInfo{
+	return &baseInfo{
 		syms:    syms,
 		sonames: check1(f.DynString(elf.DT_NEEDED)),
 		runpath: getRunPath(f, elfPath),
-	}
+	}, nil
 }
 
 func getRunPath(f *elf.File, elfPath string) []string {
@@ -114,7 +122,7 @@ func parseLdSoConfFile(filename string, seenConfs map[string]bool) []string {
 	return out
 }
 
-func (base *baseInfo) getSymMatches(searchdirs []string) {
+func (base *baseInfo) getSymMatches(searchdirs []string) error {
 	base.symnameToSonames = make(map[string][]string, len(base.syms))
 	for _, sym := range base.syms {
 		base.symnameToSonames[sym.Name] = nil
@@ -139,7 +147,11 @@ func (base *baseInfo) getSymMatches(searchdirs []string) {
 		sonameNeeded := false
 
 		for _, path := range getSonamePaths(soname, searchdirs) {
-			syms, sonames := getSyms(path)
+			syms, sonames, err := getSyms(path)
+			if err != nil {
+				return err
+			}
+
 			for _, soname := range sonames {
 				if !seenSonames[soname] {
 					sonameStack.push(soname)
@@ -163,10 +175,14 @@ func (base *baseInfo) getSymMatches(searchdirs []string) {
 	}
 
 	base.unneededSonames = unneededSonames
+	return nil
 }
 
-func getSyms(path string) ([]elf.Symbol, []string) {
-	f := check1(elf.Open(path))
+func getSyms(path string) ([]elf.Symbol, []string, error) {
+	f, err := elf.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
 	defer f.Close()
 
 	var out []elf.Symbol
@@ -181,7 +197,7 @@ func getSyms(path string) ([]elf.Symbol, []string) {
 
 	sonames := check1(f.DynString(elf.DT_NEEDED))
 
-	return out, sonames
+	return out, sonames, nil
 }
 
 func getSonamePaths(soname string, searchdirs []string) []string {
@@ -216,7 +232,7 @@ func main() {
 	flag.Parse()
 
 	if elfPath == "" {
-		fmt.Println("path not specified")
+		fmt.Fprintln(os.Stderr, "path not specified")
 		os.Exit(1)
 	}
 
@@ -227,7 +243,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	base := parseBase(elfPath, options)
+	base, err := parseBase(elfPath, options)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "parseBase: %v\n", err)
+		os.Exit(1)
+	}
 
 	var searchdirs []string
 
@@ -235,7 +255,11 @@ func main() {
 	searchdirs = append(searchdirs, "/lib64", "/usr/lib64")
 	searchdirs = append(searchdirs, parseLdSoConfFile("/etc/ld.so.conf", map[string]bool{})...)
 
-	base.getSymMatches(searchdirs)
+	err = base.getSymMatches(searchdirs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "getSymMatches: %v\n", err)
+		os.Exit(1)
+	}
 
 	for _, sym := range base.syms {
 		sym := sym.Name

@@ -25,7 +25,7 @@ type baseInfo struct {
 	runpath []string
 
 	symnameToSonames map[string][]string
-	unneededSonames []string
+	unneededSonames  []string
 }
 
 func parseBase(elfPath string, options parseOptions) baseInfo {
@@ -157,7 +157,7 @@ func (base *baseInfo) getSymMatches(searchdirs []string) {
 			}
 		}
 
-		if !sonameNeeded {
+		if !sonameNeeded && slices.Contains(base.sonames, soname) {
 			unneededSonames = append(unneededSonames, soname)
 		}
 	}

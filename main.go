@@ -258,18 +258,30 @@ func main() {
 		os.Exit(1)
 	}
 
+	var undefinedSyms []string
+
 	for _, sym := range base.syms {
 		sym := sym.Name
 		sonames := base.symnameToSonames[sym]
 		if sonames == nil {
 			fmt.Printf("%s: NO MATCHES\n", sym)
+			undefinedSyms = append(undefinedSyms, sym)
 		} else {
 			fmt.Printf("%s: %s\n", sym, strings.Join(sonames, ", "))
 		}
 	}
 
+	if !(len(base.unneededSonames) > 0 || len(undefinedSyms) > 0) {
+		return
+	}
+
+	fmt.Println()
 	if len(base.unneededSonames) > 0 {
-		fmt.Printf("\nUNNEEDED: %s\n", strings.Join(base.unneededSonames, ", "))
+		fmt.Printf("UNNEEDED: %s\n", strings.Join(base.unneededSonames, ", "))
+	}
+
+	if len(undefinedSyms) > 0 {
+		fmt.Printf("UNDEFINED: %s\n", strings.Join(undefinedSyms, ", "))
 	}
 }
 

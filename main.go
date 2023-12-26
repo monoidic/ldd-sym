@@ -249,11 +249,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	var searchdirs []string
 
-	searchdirs = append(searchdirs, base.runpath...)
-	searchdirs = append(searchdirs, "/lib64", "/usr/lib64")
-	searchdirs = append(searchdirs, parseLdSoConfFile("/etc/ld.so.conf", map[string]bool{})...)
+	searchdirs := getSearchdirs(base.runpath)
 
 	err = base.getSymMatches(searchdirs)
 	if err != nil {

@@ -139,13 +139,13 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 	}
 
 	var sonameStack stack[sonameWithSearchdirs]
-	for _, soname := range base.sonames {
+	for i := len(base.sonames) - 1; i >= 0; i-- {
+		soname := base.sonames[i]
 		sonameStack.push(sonameWithSearchdirs{
 			soname:     soname,
 			searchdirs: searchdirs,
 		})
 	}
-
 	var unneededSonames []string
 
 	for {

@@ -255,7 +255,7 @@ func main() {
 	elfPath = check1(filepath.EvalSymlinks(check1(filepath.Abs(elfPath))))
 
 	if !(options.getFunc || options.getObject || options.getOther) {
-		fmt.Println("all symbol types disabled")
+		fmt.Fprintln(os.Stderr, "all symbol types disabled")
 		os.Exit(1)
 	}
 

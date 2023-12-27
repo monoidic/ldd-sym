@@ -73,18 +73,22 @@ func parseBase(elfPath string, options parseOptions) (*baseInfo, error) {
 func getRunPath(f *elf.File, elfPath string) []string {
 	dirs := readRunPath(f)
 	if dirs == nil {
-		return dirs
+		return nil
 	}
 
-	base := filepath.Dir(elfPath)
+	base := filepath.Dir(check1(filepath.EvalSymlinks(elfPath)))
+	var out []string
 
-	for i, dir := range dirs {
-		if !strings.Contains(dir, "$ORIGIN") {
-			continue
+	for _, dir := range dirs {
+		if strings.Contains(dir, "$ORIGIN") {
+			dir = check1(filepath.EvalSymlinks(check1(filepath.Abs(strings.Replace(dir, "$ORIGIN", base, -1)))))
 		}
-		dirs[i] = check1(filepath.Abs(strings.Replace(dir, "$ORIGIN", base, -1)))
+		if !slices.Contains(out, dir) {
+			out = append(out, dir)
+		}
 	}
-	return dirs
+
+	return out
 }
 
 func readRunPath(f *elf.File) []string {
@@ -252,7 +256,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	elfPath = check1(filepath.EvalSymlinks(check1(filepath.Abs(elfPath))))
+	elfPath = check1(filepath.Abs(elfPath))
 
 	if !(options.getFunc || options.getObject || options.getOther) {
 		fmt.Fprintln(os.Stderr, "all symbol types disabled")

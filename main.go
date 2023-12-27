@@ -19,6 +19,11 @@ type parseOptions struct {
 	getOther  bool
 }
 
+type sonameWithSearchdirs struct {
+	soname     string
+	searchdirs []string
+}
+
 type baseInfo struct {
 	syms    []elf.Symbol
 	sonames []string
@@ -133,28 +138,39 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 		seenSonames[soname] = true
 	}
 
-	var sonameStack stack[string]
-	sonameStack.pushMultipleRev(base.sonames)
+	var sonameStack stack[sonameWithSearchdirs]
+	for _, soname := range base.sonames {
+		sonameStack.push(sonameWithSearchdirs{
+			soname:     soname,
+			searchdirs: searchdirs,
+		})
+	}
 
 	var unneededSonames []string
 
 	for {
-		soname, success := sonameStack.pop()
+		element, success := sonameStack.pop()
 		if !success {
 			break
 		}
 
+		soname := element.soname
+
 		sonameNeeded := false
+		searchdirs = element.searchdirs
 
 		for _, path := range getSonamePaths(soname, searchdirs) {
-			syms, sonames, err := getSyms(path)
+			syms, sonames, runpath, err := getSyms(path)
 			if err != nil {
 				return err
 			}
 
 			for _, soname := range sonames {
 				if !seenSonames[soname] {
-					sonameStack.push(soname)
+					sonameStack.push(sonameWithSearchdirs{
+						soname:     soname,
+						searchdirs: getSearchdirs(runpath),
+					})
 					seenSonames[soname] = true
 				}
 			}
@@ -178,26 +194,26 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 	return nil
 }
 
-func getSyms(path string) ([]elf.Symbol, []string, error) {
+func getSyms(path string) (syms []elf.Symbol, sonames, runpath []string, err error) {
 	f, err := elf.Open(path)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer f.Close()
 
-	var out []elf.Symbol
 	seen := make(map[string]bool)
 
 	for _, sym := range check1(f.DynamicSymbols()) {
 		if sym.Section != elf.SHN_UNDEF && !seen[sym.Name] {
-			out = append(out, sym)
+			syms = append(syms, sym)
 			seen[sym.Name] = true
 		}
 	}
 
-	sonames := check1(f.DynString(elf.DT_NEEDED))
+	sonames = check1(f.DynString(elf.DT_NEEDED))
+	runpath = getRunPath(f, path)
 
-	return out, sonames, nil
+	return syms, sonames, runpath, nil
 }
 
 func getSonamePaths(soname string, searchdirs []string) []string {
@@ -249,7 +265,6 @@ func main() {
 		os.Exit(1)
 	}
 
-
 	searchdirs := getSearchdirs(base.runpath)
 
 	err = base.getSymMatches(searchdirs)
@@ -298,12 +313,6 @@ func check1[T any](arg1 T, err error) T {
 
 type stack[T any] struct {
 	l []T
-}
-
-func (s *stack[T]) pushMultipleRev(l []T) {
-	// reverse sorted order, to pop in "the right" order
-	slices.Reverse(l)
-	s.l = append(s.l, l...)
 }
 
 func (s *stack[T]) push(e T) {

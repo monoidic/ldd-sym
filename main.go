@@ -17,6 +17,7 @@ type parseOptions struct {
 	getFunc   bool
 	getObject bool
 	getOther  bool
+	full      bool
 }
 
 type sonameWithSearchdirs struct {
@@ -31,6 +32,10 @@ type baseInfo struct {
 
 	symnameToSonames map[string][]string
 	unneededSonames  []string
+
+	options parseOptions
+	machine elf.Machine
+	class   elf.Class
 }
 
 func parseBase(elfPath string, options parseOptions) (*baseInfo, error) {
@@ -67,6 +72,9 @@ func parseBase(elfPath string, options parseOptions) (*baseInfo, error) {
 		syms:    syms,
 		sonames: check1(f.DynString(elf.DT_NEEDED)),
 		runpath: getRunPath(f, elfPath),
+		options: options,
+		machine: f.Machine,
+		class:   f.Class,
 	}, nil
 }
 
@@ -115,15 +123,21 @@ func parseLdSoConfFile(filename string, seenConfs map[string]bool) []string {
 
 	ldSoConf := check1(os.ReadFile(filename))
 	for _, line := range bytes.Split(ldSoConf, []byte("\n")) {
+		line = bytes.Trim(line, " \t\r")
 		if len(line) == 0 || line[0] == '#' {
 			continue
 		}
-		if bytes.HasPrefix(line, []byte("include")) {
-			for _, filename := range check1(filepath.Glob(filepath.Join("/etc", string(line[8:])))) {
-				out = append(out, parseLdSoConfFile(filename, seenConfs)...)
-			}
-		} else {
+		if !bytes.HasPrefix(line, []byte("include")) {
 			out = append(out, string(line))
+			continue
+		}
+
+		path := string(line[8:])
+		if !filepath.IsAbs(path) {
+			path = filepath.Join("/etc", path)
+		}
+		for _, filename := range check1(filepath.Glob(path)) {
+			out = append(out, parseLdSoConfFile(filename, seenConfs)...)
 		}
 
 	}
@@ -133,8 +147,9 @@ func parseLdSoConfFile(filename string, seenConfs map[string]bool) []string {
 
 func (base *baseInfo) getSymMatches(searchdirs []string) error {
 	base.symnameToSonames = make(map[string][]string, len(base.syms))
+	requiredSymnames := make(map[string]bool, len(base.syms))
 	for _, sym := range base.syms {
-		base.symnameToSonames[sym.Name] = nil
+		requiredSymnames[sym.Name] = true
 	}
 
 	seenSonames := make(map[string]bool)
@@ -149,7 +164,8 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 			searchdirs: searchdirs,
 		})
 	}
-	var unneededSonames []string
+
+	unneededSonames := slices.Clone(base.sonames)
 
 	for {
 		element, success := sonameQueue.pop()
@@ -163,7 +179,7 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 		searchdirs = element.searchdirs
 
 		for _, path := range getSonamePaths(soname, searchdirs) {
-			syms, sonames, runpath, err := getSyms(path)
+			syms, sonames, runpath, err := getSyms(path, base.machine, base.class)
 			if err != nil {
 				return err
 			}
@@ -179,7 +195,8 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 			}
 
 			for _, sym := range syms {
-				if sl, exists := base.symnameToSonames[sym.Name]; exists {
+				if requiredSymnames[sym.Name] {
+					sl := base.symnameToSonames[sym.Name]
 					if !slices.Contains(sl, soname) {
 						base.symnameToSonames[sym.Name] = append(sl, soname)
 						sonameNeeded = true
@@ -188,8 +205,13 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 			}
 		}
 
-		if !sonameNeeded && slices.Contains(base.sonames, soname) {
-			unneededSonames = append(unneededSonames, soname)
+		if sonameNeeded && slices.Contains(unneededSonames, soname) {
+			index := slices.Index(unneededSonames, soname)
+			unneededSonames = slices.Delete(unneededSonames, index, index+1)
+		}
+
+		if !base.options.full && len(base.symnameToSonames) == len(base.syms) {
+			break
 		}
 	}
 
@@ -197,12 +219,16 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 	return nil
 }
 
-func getSyms(path string) (syms []elf.Symbol, sonames, runpath []string, err error) {
+func getSyms(path string, machine elf.Machine, class elf.Class) (syms []elf.Symbol, sonames, runpath []string, err error) {
 	f, err := elf.Open(path)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	defer f.Close()
+
+	if !(f.Machine == machine && f.Class == class) {
+		return nil, nil, nil, nil
+	}
 
 	seen := make(map[string]bool)
 
@@ -248,6 +274,7 @@ func main() {
 	flag.BoolVar(&options.getFunc, "funcs", true, "track functions")
 	flag.BoolVar(&options.getObject, "objects", true, "track objects")
 	flag.BoolVar(&options.getOther, "other", false, "track other symbols")
+	flag.BoolVar(&options.full, "full", true, "do not exit out early if all symbols are resolved")
 	flag.Parse()
 
 	if elfPath == "" {

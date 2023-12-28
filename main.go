@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"debug/elf"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -38,6 +39,16 @@ type baseInfo struct {
 	class   elf.Class
 }
 
+type LddResults struct {
+	// for correct order
+	Syms    []string
+	Sonames []string
+
+	SymnameToSonames map[string][]string
+	UnneededSonames  []string
+	UndefinedSyms    []string
+}
+
 func parseBase(elfPath string, options parseOptions) (*baseInfo, error) {
 	f, err := elf.Open(elfPath)
 	if err != nil {
@@ -68,9 +79,14 @@ func parseBase(elfPath string, options parseOptions) (*baseInfo, error) {
 		syms = append(syms, sym)
 	}
 
+	sonames := check1(f.DynString(elf.DT_NEEDED))
+	if sonames == nil {
+		sonames = []string{}
+	}
+
 	return &baseInfo{
 		syms:    syms,
-		sonames: check1(f.DynString(elf.DT_NEEDED)),
+		sonames: sonames,
 		runpath: getRunPath(f, elfPath),
 		options: options,
 		machine: f.Machine,
@@ -84,12 +100,15 @@ func getRunPath(f *elf.File, elfPath string) []string {
 		return nil
 	}
 
-	base := filepath.Dir(check1(filepath.EvalSymlinks(elfPath)))
+	elfPath = check1(filepath.EvalSymlinks(elfPath))
+	base := filepath.Dir(elfPath)
 	var out []string
 
 	for _, dir := range dirs {
 		if strings.Contains(dir, "$ORIGIN") {
-			dir = check1(filepath.EvalSymlinks(check1(filepath.Abs(strings.Replace(dir, "$ORIGIN", base, -1)))))
+			dir = strings.Replace(dir, "$ORIGIN", base, -1)
+			dir = check1(filepath.Abs(dir))
+			dir = check1(filepath.EvalSymlinks(dir))
 		}
 		if !slices.Contains(out, dir) {
 			out = append(out, dir)
@@ -267,66 +286,105 @@ func fileExists(path string) bool {
 	return false
 }
 
-func main() {
-	var elfPath string
-	var options parseOptions
-	flag.StringVar(&elfPath, "path", "", "path to file")
-	flag.BoolVar(&options.getFunc, "funcs", true, "track functions")
-	flag.BoolVar(&options.getObject, "objects", true, "track objects")
-	flag.BoolVar(&options.getOther, "other", false, "track other symbols")
-	flag.BoolVar(&options.full, "full", true, "do not exit out early if all symbols are resolved")
-	flag.Parse()
-
+func lddSym(elfPath string, options parseOptions) (*LddResults, error) {
 	if elfPath == "" {
-		fmt.Fprintln(os.Stderr, "path not specified")
-		os.Exit(1)
+		return nil, errors.New("path not specified")
 	}
 
-	elfPath = check1(filepath.Abs(elfPath))
-
 	if !(options.getFunc || options.getObject || options.getOther) {
-		fmt.Fprintln(os.Stderr, "all symbol types disabled")
-		os.Exit(1)
+		return nil, errors.New("all symbol types disabled")
+	}
+
+	elfPath, err := filepath.Abs(elfPath)
+	if err != nil {
+		return nil, fmt.Errorf("elfPath abs: %w", err)
 	}
 
 	base, err := parseBase(elfPath, options)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "parseBase: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("parseBase: %w", err)
 	}
 
 	searchdirs := getSearchdirs(base.runpath)
 
 	err = base.getSymMatches(searchdirs)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "getSymMatches: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("getSymMatches: %w", err)
 	}
 
 	var undefinedSyms []string
+	syms := make([]string, len(base.syms))
 
-	for _, sym := range base.syms {
-		sym := sym.Name
-		sonames := base.symnameToSonames[sym]
-		if sonames == nil {
-			fmt.Printf("%s: NO MATCHES\n", sym)
-			undefinedSyms = append(undefinedSyms, sym)
-		} else {
-			fmt.Printf("%s: %s\n", sym, strings.Join(sonames, ", "))
+	for i, sym := range base.syms {
+		name := sym.Name
+		syms[i] = name
+		sonames := base.symnameToSonames[name]
+		if len(sonames) == 0 {
+			undefinedSyms = append(undefinedSyms, name)
 		}
 	}
 
-	if !(len(base.unneededSonames) > 0 || len(undefinedSyms) > 0) {
+	if undefinedSyms == nil {
+		undefinedSyms = []string{}
+	}
+
+	ret := &LddResults{
+		Syms:             syms,
+		Sonames:          base.sonames,
+		SymnameToSonames: base.symnameToSonames,
+		UnneededSonames:  base.unneededSonames,
+		UndefinedSyms:    undefinedSyms,
+	}
+
+	return ret, nil
+}
+
+func (lddRes *LddResults) print() {
+	for _, sym := range lddRes.Syms {
+		sonames := lddRes.SymnameToSonames[sym]
+		if len(sonames) == 0 {
+			continue
+		}
+		fmt.Printf("%s: %s\n", sym, strings.Join(sonames, ", "))
+	}
+
+	if !(len(lddRes.UnneededSonames) > 0 || len(lddRes.UndefinedSyms) > 0) {
 		return
 	}
 
 	fmt.Println()
-	if len(base.unneededSonames) > 0 {
-		fmt.Printf("UNNEEDED: %s\n", strings.Join(base.unneededSonames, ", "))
+	if len(lddRes.UnneededSonames) > 0 {
+		fmt.Printf("UNNEEDED: %s\n", strings.Join(lddRes.UnneededSonames, ", "))
 	}
 
-	if len(undefinedSyms) > 0 {
-		fmt.Printf("UNDEFINED: %s\n", strings.Join(undefinedSyms, ", "))
+	if len(lddRes.UndefinedSyms) > 0 {
+		fmt.Printf("UNDEFINED: %s\n", strings.Join(lddRes.UndefinedSyms, ", "))
+	}
+}
+
+func main() {
+	var elfPath string
+	var options parseOptions
+	var jsonOut bool
+	flag.StringVar(&elfPath, "path", "", "path to file")
+	flag.BoolVar(&options.getFunc, "funcs", true, "track functions")
+	flag.BoolVar(&options.getObject, "objects", true, "track objects")
+	flag.BoolVar(&options.getOther, "other", false, "track other symbols")
+	flag.BoolVar(&options.full, "full", true, "do not exit out early if all symbols are resolved")
+	flag.BoolVar(&jsonOut, "json", false, "output json")
+	flag.Parse()
+
+	lddRes, err := lddSym(elfPath, options)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	if jsonOut {
+		encoded := check1(json.Marshal(lddRes))
+		fmt.Println(string(encoded))
+	} else {
+		lddRes.print()
 	}
 }
 

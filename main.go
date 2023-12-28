@@ -277,13 +277,12 @@ func getSonamePaths(soname string, searchdirs []string) []string {
 
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
-	if err == nil {
-		return true
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		check(err)
-	}
-	return false
+	return err == nil
+	/*
+		if !errors.Is(err, os.ErrNotExist) {
+			check(err)
+		}
+	*/
 }
 
 func lddSym(elfPath string, options parseOptions) (*LddResults, error) {

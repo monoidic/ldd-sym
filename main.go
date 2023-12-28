@@ -27,7 +27,7 @@ type sonameWithSearchdirs struct {
 }
 
 type baseInfo struct {
-	syms    []elf.Symbol
+	syms    []string
 	sonames []string
 	runpath []string
 
@@ -56,7 +56,7 @@ func parseBase(elfPath string, options parseOptions) (*baseInfo, error) {
 	}
 	defer f.Close()
 
-	var syms []elf.Symbol
+	var syms []string
 
 	dynSyms, err := f.DynamicSymbols()
 	if err != nil {
@@ -76,7 +76,7 @@ func parseBase(elfPath string, options parseOptions) (*baseInfo, error) {
 			continue
 		}
 
-		syms = append(syms, sym)
+		syms = append(syms, sym.Name)
 	}
 
 	sonames := check1(f.DynString(elf.DT_NEEDED))
@@ -168,7 +168,7 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 	base.symnameToSonames = make(map[string][]string, len(base.syms))
 	requiredSymnames := make(map[string]bool, len(base.syms))
 	for _, sym := range base.syms {
-		requiredSymnames[sym.Name] = true
+		requiredSymnames[sym] = true
 	}
 
 	seenSonames := make(map[string]bool)
@@ -312,14 +312,10 @@ func lddSym(elfPath string, options parseOptions) (*LddResults, error) {
 	}
 
 	var undefinedSyms []string
-	syms := make([]string, len(base.syms))
 
-	for i, sym := range base.syms {
-		name := sym.Name
-		syms[i] = name
-		sonames := base.symnameToSonames[name]
-		if len(sonames) == 0 {
-			undefinedSyms = append(undefinedSyms, name)
+	for _, sym := range base.syms {
+		if len(base.symnameToSonames[sym]) == 0 {
+			undefinedSyms = append(undefinedSyms, sym)
 		}
 	}
 
@@ -328,7 +324,7 @@ func lddSym(elfPath string, options parseOptions) (*LddResults, error) {
 	}
 
 	ret := &LddResults{
-		Syms:             syms,
+		Syms:             base.syms,
 		Sonames:          base.sonames,
 		SymnameToSonames: base.symnameToSonames,
 		UnneededSonames:  base.unneededSonames,

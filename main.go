@@ -142,10 +142,9 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 		seenSonames[soname] = true
 	}
 
-	var sonameStack stack[sonameWithSearchdirs]
-	for i := len(base.sonames) - 1; i >= 0; i-- {
-		soname := base.sonames[i]
-		sonameStack.push(sonameWithSearchdirs{
+	var sonameQueue queue[sonameWithSearchdirs]
+	for _, soname := range base.sonames {
+		sonameQueue.push(sonameWithSearchdirs{
 			soname:     soname,
 			searchdirs: searchdirs,
 		})
@@ -153,7 +152,7 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 	var unneededSonames []string
 
 	for {
-		element, success := sonameStack.pop()
+		element, success := sonameQueue.pop()
 		if !success {
 			break
 		}
@@ -171,7 +170,7 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 
 			for _, soname := range sonames {
 				if !seenSonames[soname] {
-					sonameStack.push(sonameWithSearchdirs{
+					sonameQueue.push(sonameWithSearchdirs{
 						soname:     soname,
 						searchdirs: getSearchdirs(runpath),
 					})
@@ -315,22 +314,21 @@ func check1[T any](arg1 T, err error) T {
 	return arg1
 }
 
-type stack[T any] struct {
+type queue[T any] struct {
 	l []T
 }
 
-func (s *stack[T]) push(e T) {
-	s.l = append(s.l, e)
+func (q *queue[T]) push(e T) {
+	q.l = append(q.l, e)
 }
 
-func (s *stack[T]) pop() (T, bool) {
-	var top T
-	size := len(s.l)
-	if size == 0 {
-		return top, false
+func (q *queue[T]) pop() (T, bool) {
+	var next T
+	if len(q.l) == 0 {
+		return next, false
 	}
 
-	top = s.l[size-1]
-	s.l = s.l[:size-1]
-	return top, true
+	next = q.l[0]
+	q.l = q.l[1:]
+	return next, true
 }

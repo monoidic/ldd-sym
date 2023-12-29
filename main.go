@@ -188,6 +188,8 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 
 	sonamePaths := make(map[string][]string)
 
+	var allSonames []string
+
 	for {
 		element, success := sonameQueue.pop()
 		if !success {
@@ -195,6 +197,9 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 		}
 
 		soname := element.soname
+		if base.options.full {
+			allSonames = append(allSonames, soname)
+		}
 
 		sonameNeeded := false
 		searchdirs = element.searchdirs
@@ -209,7 +214,7 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 				continue
 			}
 
-			if slices.Contains(base.sonames, soname) {
+			if base.options.full || slices.Contains(base.sonames, soname) {
 				sonamePaths[soname] = append(sonamePaths[soname], path)
 			}
 
@@ -246,6 +251,9 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 
 	base.unneededSonames = unneededSonames
 	base.sonamePaths = sonamePaths
+	if base.options.full {
+		base.sonames = allSonames
+	}
 
 	return nil
 }

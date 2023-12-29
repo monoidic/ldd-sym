@@ -229,10 +229,10 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 			}
 
 			for _, sym := range syms {
-				if requiredSymnames[sym.Name] {
-					sl := base.symnameToSonames[sym.Name]
+				if requiredSymnames[sym] {
+					sl := base.symnameToSonames[sym]
 					if !slices.Contains(sl, soname) {
-						base.symnameToSonames[sym.Name] = append(sl, soname)
+						base.symnameToSonames[sym] = append(sl, soname)
 						sonameNeeded = true
 					}
 				}
@@ -258,7 +258,7 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 	return nil
 }
 
-func getSyms(path string, machine elf.Machine, class elf.Class) (syms []elf.Symbol, sonames, runpath []string, archMatch bool, err error) {
+func getSyms(path string, machine elf.Machine, class elf.Class) (syms, sonames, runpath []string, archMatch bool, err error) {
 	f, err := elf.Open(path)
 	if err != nil {
 		return nil, nil, nil, false, err
@@ -273,7 +273,7 @@ func getSyms(path string, machine elf.Machine, class elf.Class) (syms []elf.Symb
 
 	for _, sym := range check1(f.DynamicSymbols()) {
 		if sym.Section != elf.SHN_UNDEF && !seen[sym.Name] {
-			syms = append(syms, sym)
+			syms = append(syms, sym.Name)
 			seen[sym.Name] = true
 		}
 	}

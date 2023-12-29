@@ -172,16 +172,14 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 	}
 
 	seenSonames := make(map[string]bool)
-	for _, soname := range base.sonames {
-		seenSonames[soname] = true
-	}
-
 	var sonameQueue queue[sonameWithSearchdirs]
+
 	for _, soname := range base.sonames {
 		sonameQueue.push(sonameWithSearchdirs{
 			soname:     soname,
 			searchdirs: searchdirs,
 		})
+		seenSonames[soname] = true
 	}
 
 	unneededSonames := slices.Clone(base.sonames)
@@ -265,6 +263,10 @@ func getSyms(path string, machine elf.Machine, class elf.Class) (syms []elf.Symb
 }
 
 func getSonamePaths(soname string, searchdirs []string) []string {
+	if strings.Contains(soname, "/") {
+		return []string{check1(filepath.Abs(soname))}
+	}
+
 	var ret []string
 	for _, dir := range searchdirs {
 		path := filepath.Join(dir, soname)

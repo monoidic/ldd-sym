@@ -32,6 +32,7 @@ type baseInfo struct {
 	runpath []string
 
 	symnameToSonames map[string][]string
+	sonamePaths      map[string][]string
 	unneededSonames  []string
 
 	options parseOptions
@@ -45,6 +46,7 @@ type LddResults struct {
 	Sonames []string
 
 	SymnameToSonames map[string][]string
+	SonamePaths      map[string][]string
 	UnneededSonames  []string
 	UndefinedSyms    []string
 }
@@ -184,6 +186,8 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 
 	unneededSonames := slices.Clone(base.sonames)
 
+	sonamePaths := make(map[string][]string)
+
 	for {
 		element, success := sonameQueue.pop()
 		if !success {
@@ -196,9 +200,17 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 		searchdirs = element.searchdirs
 
 		for _, path := range getSonamePaths(soname, searchdirs) {
-			syms, sonames, runpath, err := getSyms(path, base.machine, base.class)
+			syms, sonames, runpath, archMatch, err := getSyms(path, base.machine, base.class)
 			if err != nil {
 				return err
+			}
+
+			if !archMatch {
+				continue
+			}
+
+			if slices.Contains(base.sonames, soname) {
+				sonamePaths[soname] = append(sonamePaths[soname], path)
 			}
 
 			for _, soname := range sonames {
@@ -233,18 +245,20 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 	}
 
 	base.unneededSonames = unneededSonames
+	base.sonamePaths = sonamePaths
+
 	return nil
 }
 
-func getSyms(path string, machine elf.Machine, class elf.Class) (syms []elf.Symbol, sonames, runpath []string, err error) {
+func getSyms(path string, machine elf.Machine, class elf.Class) (syms []elf.Symbol, sonames, runpath []string, archMatch bool, err error) {
 	f, err := elf.Open(path)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, false, err
 	}
 	defer f.Close()
 
 	if !(f.Machine == machine && f.Class == class) {
-		return nil, nil, nil, nil
+		return nil, nil, nil, false, nil
 	}
 
 	seen := make(map[string]bool)
@@ -259,7 +273,7 @@ func getSyms(path string, machine elf.Machine, class elf.Class) (syms []elf.Symb
 	sonames = check1(f.DynString(elf.DT_NEEDED))
 	runpath = getRunPath(f, path)
 
-	return syms, sonames, runpath, nil
+	return syms, sonames, runpath, true, nil
 }
 
 func getSonamePaths(soname string, searchdirs []string) []string {
@@ -274,7 +288,8 @@ func getSonamePaths(soname string, searchdirs []string) []string {
 			ret = append(ret, path)
 		}
 	}
-	return ret
+
+	return uniqExistsPath(ret)
 }
 
 func fileExists(path string) bool {
@@ -329,6 +344,7 @@ func lddSym(elfPath string, options parseOptions) (*LddResults, error) {
 		Syms:             base.syms,
 		Sonames:          base.sonames,
 		SymnameToSonames: base.symnameToSonames,
+		SonamePaths:      base.sonamePaths,
 		UnneededSonames:  base.unneededSonames,
 		UndefinedSyms:    undefinedSyms,
 	}
@@ -343,6 +359,13 @@ func (lddRes *LddResults) print() {
 			continue
 		}
 		fmt.Printf("%s: %s\n", sym, strings.Join(sonames, ", "))
+	}
+
+	fmt.Println()
+
+	for _, soname := range lddRes.Sonames {
+		paths := lddRes.SonamePaths[soname]
+		fmt.Printf("%s: %s\n", soname, strings.Join(paths, ", "))
 	}
 
 	if !(len(lddRes.UnneededSonames) > 0 || len(lddRes.UndefinedSyms) > 0) {
@@ -413,4 +436,22 @@ func (q *queue[T]) pop() (T, bool) {
 	next = q.l[0]
 	q.l = q.l[1:]
 	return next, true
+}
+
+// preserves order
+func uniqExistsPath(arr []string) []string {
+	var ret []string
+	for _, path := range arr {
+		path = check1(filepath.Abs(path))
+		if !fileExists(path) {
+			continue
+		}
+		path = check1(filepath.EvalSymlinks(path))
+		if slices.Contains(ret, path) {
+			continue
+		}
+		ret = append(ret, path)
+	}
+
+	return ret
 }

@@ -8,5 +8,5 @@ func getSearchdirs(runpath []string) (ret []string) {
 		"/odm/lib64", "/odm/lib",
 		"/vendor/lib64", "/vendor/lib",
 	)
-	return ret
+	return uniqExistsPath(ret)
 }

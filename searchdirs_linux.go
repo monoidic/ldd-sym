@@ -11,5 +11,6 @@ func getSearchdirs(runpath []string) (ret []string) {
 		"/usr/local/lib64", "/usr/local/lib",
 	)
 	ret = append(ret, parseLdSoConfFile("/etc/ld.so.conf", map[string]bool{})...)
-	return ret
+
+	return uniqExistsPath(ret)
 }

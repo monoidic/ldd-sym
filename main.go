@@ -58,7 +58,7 @@ func parseBase(elfPath string, options parseOptions) (*baseInfo, error) {
 	}
 	defer f.Close()
 
-	var syms []string
+	syms := []string{}
 
 	dynSyms, err := f.DynamicSymbols()
 	if err != nil {
@@ -117,7 +117,7 @@ func getRunPath(f *elf.File, elfPath string) ([]string, error) {
 	}
 
 	base := filepath.Dir(elfPath)
-	var out []string
+	out := []string{}
 
 	for _, dir := range dirs {
 		if strings.Contains(dir, "$ORIGIN") {
@@ -159,7 +159,7 @@ func parseLdSoConfFile(filename string, seenConfs map[string]bool) []string {
 	}
 	seenConfs[filename] = true
 
-	var out []string
+	out := []string{}
 
 	// might not exist on non-glibc systems
 	ldSoConf, err := os.ReadFile(filename)
@@ -216,7 +216,7 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 
 	sonamePaths := make(map[string][]string)
 
-	var allSonames []string
+	allSonames := []string{}
 
 	for {
 		element, success := sonameQueue.pop()
@@ -235,7 +235,7 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 		for _, path := range getSonamePaths(soname, searchdirs) {
 			syms, sonames, runpath, archMatch, err := getSyms(path, base.machine, base.class)
 			if err != nil {
-				return err
+				return fmt.Errorf("getSymMatches: %w", err)
 			}
 
 			if !archMatch {
@@ -332,7 +332,7 @@ func getSonamePaths(soname string, searchdirs []string) []string {
 		return []string{path}
 	}
 
-	var ret []string
+	ret := []string{}
 	for _, dir := range searchdirs {
 		path := filepath.Join(dir, soname)
 		if fileExists(path) {
@@ -408,7 +408,9 @@ func (lddRes *LddResults) print() {
 		fmt.Printf("%s: %s\n", sym, strings.Join(sonames, ", "))
 	}
 
-	fmt.Println()
+	if len(lddRes.Syms) > 0 {
+		fmt.Println()
+	}
 
 	for _, soname := range lddRes.Sonames {
 		paths := lddRes.SonamePaths[soname]
@@ -487,7 +489,7 @@ func (q *queue[T]) pop() (T, bool) {
 
 // preserves order
 func uniqExistsPath(arr []string) []string {
-	var ret []string
+	ret := []string{}
 	var err error
 
 	for _, path := range arr {

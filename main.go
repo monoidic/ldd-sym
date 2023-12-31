@@ -81,43 +81,62 @@ func parseBase(elfPath string, options parseOptions) (*baseInfo, error) {
 		syms = append(syms, sym.Name)
 	}
 
-	sonames := check1(f.DynString(elf.DT_NEEDED))
+	sonames, err := f.DynString(elf.DT_NEEDED)
+	if err != nil {
+		return nil, fmt.Errorf("parseBase DT_NEEDED: %w", err)
+	}
 	if sonames == nil {
 		sonames = []string{}
+	}
+
+	runpath, err := getRunPath(f, elfPath)
+	if err != nil {
+		return nil, fmt.Errorf("parseBase getRunPath: %w", err)
 	}
 
 	return &baseInfo{
 		syms:    syms,
 		sonames: sonames,
-		runpath: getRunPath(f, elfPath),
+		runpath: runpath,
 		options: options,
 		machine: f.Machine,
 		class:   f.Class,
 	}, nil
 }
 
-func getRunPath(f *elf.File, elfPath string) []string {
+func getRunPath(f *elf.File, elfPath string) ([]string, error) {
 	dirs := readRunPath(f)
-	if dirs == nil {
-		return nil
+	if len(dirs) == 0 {
+		return nil, nil
 	}
 
-	elfPath = check1(filepath.EvalSymlinks(elfPath))
+	var err error
+	elfPath, err = filepath.EvalSymlinks(elfPath)
+	if err != nil {
+		return nil, fmt.Errorf("getRunPath EvalSymlinks: %w", err)
+	}
+
 	base := filepath.Dir(elfPath)
 	var out []string
 
 	for _, dir := range dirs {
 		if strings.Contains(dir, "$ORIGIN") {
 			dir = strings.Replace(dir, "$ORIGIN", base, -1)
-			dir = check1(filepath.Abs(dir))
-			dir = check1(filepath.EvalSymlinks(dir))
+			dir, err = filepath.Abs(dir)
+			if err != nil {
+				return nil, fmt.Errorf("getRunPath Abs: %w", err)
+			}
+			dir, err = filepath.EvalSymlinks(dir)
+			if err != nil {
+				return nil, fmt.Errorf("getRunPath EvalSymlinksOrigin: %w", err)
+			}
 		}
 		if !slices.Contains(out, dir) {
 			out = append(out, dir)
 		}
 	}
 
-	return out
+	return out, nil
 }
 
 func readRunPath(f *elf.File) []string {
@@ -142,7 +161,12 @@ func parseLdSoConfFile(filename string, seenConfs map[string]bool) []string {
 
 	var out []string
 
-	ldSoConf := check1(os.ReadFile(filename))
+	// might not exist on non-glibc systems
+	ldSoConf, err := os.ReadFile(filename)
+	if err != nil {
+		return nil
+	}
+
 	for _, line := range bytes.Split(ldSoConf, []byte("\n")) {
 		line = bytes.Trim(line, " \t\r")
 		if len(line) == 0 || line[0] == '#' {
@@ -157,10 +181,14 @@ func parseLdSoConfFile(filename string, seenConfs map[string]bool) []string {
 		if !filepath.IsAbs(path) {
 			path = filepath.Join("/etc", path)
 		}
-		for _, filename := range check1(filepath.Glob(path)) {
-			out = append(out, parseLdSoConfFile(filename, seenConfs)...)
+		filenames, err := filepath.Glob(path)
+		if err != nil {
+			continue
 		}
 
+		for _, filename := range filenames {
+			out = append(out, parseLdSoConfFile(filename, seenConfs)...)
+		}
 	}
 
 	return out
@@ -271,22 +299,37 @@ func getSyms(path string, machine elf.Machine, class elf.Class) (syms, sonames, 
 
 	seen := make(map[string]bool)
 
-	for _, sym := range check1(f.DynamicSymbols()) {
+	dynSyms, err := f.DynamicSymbols()
+	if err != nil {
+		return nil, nil, nil, false, fmt.Errorf("getSyms dynsyms: %w", err)
+	}
+
+	for _, sym := range dynSyms {
 		if sym.Section != elf.SHN_UNDEF && !seen[sym.Name] {
 			syms = append(syms, sym.Name)
 			seen[sym.Name] = true
 		}
 	}
 
-	sonames = check1(f.DynString(elf.DT_NEEDED))
-	runpath = getRunPath(f, path)
+	sonames, err = f.DynString(elf.DT_NEEDED)
+	if err != nil {
+		return nil, nil, nil, false, fmt.Errorf("getSyms DynString: %w", err)
+	}
+	runpath, err = getRunPath(f, path)
+	if err != nil {
+		return nil, nil, nil, false, err
+	}
 
 	return syms, sonames, runpath, true, nil
 }
 
 func getSonamePaths(soname string, searchdirs []string) []string {
 	if strings.Contains(soname, "/") {
-		return []string{check1(filepath.Abs(soname))}
+		path, err := filepath.Abs(soname)
+		if err != nil {
+			return nil
+		}
+		return []string{path}
 	}
 
 	var ret []string
@@ -336,16 +379,12 @@ func lddSym(elfPath string, options parseOptions) (*LddResults, error) {
 		return nil, fmt.Errorf("getSymMatches: %w", err)
 	}
 
-	var undefinedSyms []string
+	undefinedSyms := []string{}
 
 	for _, sym := range base.syms {
 		if len(base.symnameToSonames[sym]) == 0 {
 			undefinedSyms = append(undefinedSyms, sym)
 		}
-	}
-
-	if undefinedSyms == nil {
-		undefinedSyms = []string{}
 	}
 
 	ret := &LddResults{
@@ -449,13 +488,15 @@ func (q *queue[T]) pop() (T, bool) {
 // preserves order
 func uniqExistsPath(arr []string) []string {
 	var ret []string
+	var err error
+
 	for _, path := range arr {
-		path = check1(filepath.Abs(path))
-		if !fileExists(path) {
+		path, err = filepath.Abs(path)
+		if !(err == nil && fileExists(path)) {
 			continue
 		}
-		path = check1(filepath.EvalSymlinks(path))
-		if slices.Contains(ret, path) {
+		path, err = filepath.EvalSymlinks(path)
+		if err != nil || slices.Contains(ret, path) {
 			continue
 		}
 		ret = append(ret, path)

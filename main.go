@@ -15,6 +15,7 @@ import (
 )
 
 type parseOptions struct {
+	root      string
 	getFunc   bool
 	getObject bool
 	getOther  bool
@@ -47,8 +48,9 @@ type LddResults struct {
 
 	SymnameToSonames map[string][]string
 	SonamePaths      map[string][]string
-	UnneededSonames  []string
-	UndefinedSyms    []string
+
+	UnneededSonames []string
+	UndefinedSyms   []string
 }
 
 func parseBase(elfPath string, options parseOptions) (*baseInfo, error) {
@@ -58,7 +60,7 @@ func parseBase(elfPath string, options parseOptions) (*baseInfo, error) {
 	}
 	defer f.Close()
 
-	syms := []string{}
+	var syms []string
 
 	dynSyms, err := f.DynamicSymbols()
 	if err != nil {
@@ -85,9 +87,6 @@ func parseBase(elfPath string, options parseOptions) (*baseInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parseBase DT_NEEDED: %w", err)
 	}
-	if sonames == nil {
-		sonames = []string{}
-	}
 
 	runpath, err := getRunPath(f, elfPath)
 	if err != nil {
@@ -110,18 +109,13 @@ func getRunPath(f *elf.File, elfPath string) ([]string, error) {
 		return nil, nil
 	}
 
+	origin := filepath.Dir(elfPath)
+	var out []string
 	var err error
-	elfPath, err = filepath.EvalSymlinks(elfPath)
-	if err != nil {
-		return nil, fmt.Errorf("getRunPath EvalSymlinks: %w", err)
-	}
-
-	base := filepath.Dir(elfPath)
-	out := []string{}
 
 	for _, dir := range dirs {
 		if strings.Contains(dir, "$ORIGIN") {
-			dir = strings.Replace(dir, "$ORIGIN", base, -1)
+			dir = strings.Replace(dir, "$ORIGIN", origin, -1)
 			dir, err = filepath.Abs(dir)
 			if err != nil {
 				return nil, fmt.Errorf("getRunPath Abs: %w", err)
@@ -159,7 +153,7 @@ func parseLdSoConfFile(filename string, seenConfs map[string]bool) []string {
 	}
 	seenConfs[filename] = true
 
-	out := []string{}
+	var out []string
 
 	// might not exist on non-glibc systems
 	ldSoConf, err := os.ReadFile(filename)
@@ -179,7 +173,7 @@ func parseLdSoConfFile(filename string, seenConfs map[string]bool) []string {
 
 		path := string(line[8:])
 		if !filepath.IsAbs(path) {
-			path = filepath.Join("/etc", path)
+			path = filepath.Join(filepath.Dir(filename), path)
 		}
 		filenames, err := filepath.Glob(path)
 		if err != nil {
@@ -216,7 +210,7 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 
 	sonamePaths := make(map[string][]string)
 
-	allSonames := []string{}
+	var allSonames []string
 
 	for {
 		element, success := sonameQueue.pop()
@@ -232,7 +226,7 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 		sonameNeeded := false
 		searchdirs = element.searchdirs
 
-		for _, path := range getSonamePaths(soname, searchdirs) {
+		for _, path := range getSonamePaths(soname, searchdirs, base.options) {
 			syms, sonames, runpath, archMatch, err := getSyms(path, base.machine, base.class)
 			if err != nil {
 				return fmt.Errorf("getSymMatches: %w", err)
@@ -250,7 +244,7 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 				if !seenSonames[soname] {
 					sonameQueue.push(sonameWithSearchdirs{
 						soname:     soname,
-						searchdirs: getSearchdirs(runpath),
+						searchdirs: getSearchdirs(runpath, base.options),
 					})
 					seenSonames[soname] = true
 				}
@@ -323,7 +317,7 @@ func getSyms(path string, machine elf.Machine, class elf.Class) (syms, sonames, 
 	return syms, sonames, runpath, true, nil
 }
 
-func getSonamePaths(soname string, searchdirs []string) []string {
+func getSonamePaths(soname string, searchdirs []string, options parseOptions) []string {
 	if strings.Contains(soname, "/") {
 		path, err := filepath.Abs(soname)
 		if err != nil {
@@ -332,9 +326,9 @@ func getSonamePaths(soname string, searchdirs []string) []string {
 		return []string{path}
 	}
 
-	ret := []string{}
+	var ret []string
 	for _, dir := range searchdirs {
-		path := filepath.Join(dir, soname)
+		path := filepath.Join(options.root, dir, soname)
 		if fileExists(path) {
 			ret = append(ret, path)
 		}
@@ -367,19 +361,24 @@ func lddSym(elfPath string, options parseOptions) (*LddResults, error) {
 		return nil, fmt.Errorf("elfPath abs: %w", err)
 	}
 
+	elfPath, err = filepath.EvalSymlinks(elfPath)
+	if err != nil {
+		return nil, fmt.Errorf("elfPath EvalSymlinks: %w", err)
+	}
+
 	base, err := parseBase(elfPath, options)
 	if err != nil {
 		return nil, fmt.Errorf("parseBase: %w", err)
 	}
 
-	searchdirs := getSearchdirs(base.runpath)
+	searchdirs := getSearchdirs(base.runpath, base.options)
 
 	err = base.getSymMatches(searchdirs)
 	if err != nil {
 		return nil, fmt.Errorf("getSymMatches: %w", err)
 	}
 
-	undefinedSyms := []string{}
+	var undefinedSyms []string
 
 	for _, sym := range base.syms {
 		if len(base.symnameToSonames[sym]) == 0 {
@@ -397,6 +396,20 @@ func lddSym(elfPath string, options parseOptions) (*LddResults, error) {
 	}
 
 	return ret, nil
+}
+
+func (lddRes *LddResults) noNil() {
+	for _, slicePtr := range []*[]string{&lddRes.Sonames, &lddRes.Syms, &lddRes.UnneededSonames, &lddRes.UndefinedSyms} {
+		if *slicePtr == nil {
+			*slicePtr = make([]string, 0)
+		}
+	}
+
+	for _, mapPtr := range []*map[string][]string{&lddRes.SonamePaths, &lddRes.SymnameToSonames} {
+		if *mapPtr == nil {
+			*mapPtr = make(map[string][]string)
+		}
+	}
 }
 
 func (lddRes *LddResults) print() {
@@ -436,12 +449,26 @@ func main() {
 	var options parseOptions
 	var jsonOut bool
 	flag.StringVar(&elfPath, "path", "", "path to file")
+	flag.StringVar(&options.root, "root", "/", "directory to consider the root for SONAME resolution")
 	flag.BoolVar(&options.getFunc, "funcs", true, "track functions")
 	flag.BoolVar(&options.getObject, "objects", true, "track objects")
 	flag.BoolVar(&options.getOther, "other", false, "track other symbols")
 	flag.BoolVar(&options.full, "full", true, "do not exit out early if all symbols are resolved")
 	flag.BoolVar(&jsonOut, "json", false, "output json")
 	flag.Parse()
+
+	var err error
+
+	options.root, err = filepath.Abs(options.root)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	options.root, err = filepath.EvalSymlinks(options.root)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	lddRes, err := lddSym(elfPath, options)
 	if err != nil {
@@ -450,6 +477,7 @@ func main() {
 	}
 
 	if jsonOut {
+		lddRes.noNil()
 		encoded := check1(json.Marshal(lddRes))
 		fmt.Println(string(encoded))
 	} else {
@@ -489,7 +517,7 @@ func (q *queue[T]) pop() (T, bool) {
 
 // preserves order
 func uniqExistsPath(arr []string) []string {
-	ret := []string{}
+	var ret []string
 	var err error
 
 	for _, path := range arr {

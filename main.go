@@ -16,6 +16,7 @@ import (
 )
 
 type parseOptions struct {
+	elfPath   string
 	root      string
 	getFunc   bool
 	getObject bool
@@ -56,8 +57,8 @@ type LddResults struct {
 	UndefinedSyms   []string
 }
 
-func parseBase(elfPath string, options parseOptions) (*baseInfo, error) {
-	f, err := elf.Open(elfPath)
+func parseBase(options parseOptions) (*baseInfo, error) {
+	f, err := elf.Open(options.elfPath)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +92,7 @@ func parseBase(elfPath string, options parseOptions) (*baseInfo, error) {
 		return nil, fmt.Errorf("parseBase DT_NEEDED: %w", err)
 	}
 
-	runpath, err := getRunPath(f, elfPath)
+	runpath, err := getRunPath(f, options.elfPath)
 	if err != nil {
 		return nil, fmt.Errorf("parseBase getRunPath: %w", err)
 	}
@@ -350,26 +351,36 @@ func fileExists(path string) bool {
 	*/
 }
 
-func lddSym(elfPath string, options parseOptions) (*LddResults, error) {
-	if elfPath == "" {
+func lddSym(options parseOptions) (*LddResults, error) {
+	if options.elfPath == "" {
 		return nil, errors.New("path not specified")
 	}
 
 	if !(options.getFunc || options.getObject || options.getOther) {
 		return nil, errors.New("all symbol types disabled")
 	}
+	var err error
 
-	elfPath, err := filepath.Abs(elfPath)
+	options.elfPath, err = filepath.Abs(options.elfPath)
 	if err != nil {
 		return nil, fmt.Errorf("elfPath abs: %w", err)
 	}
 
-	elfPath, err = filepath.EvalSymlinks(elfPath)
+	options.elfPath, err = filepath.EvalSymlinks(options.elfPath)
 	if err != nil {
 		return nil, fmt.Errorf("elfPath EvalSymlinks: %w", err)
 	}
 
-	base, err := parseBase(elfPath, options)
+	options.root, err = filepath.Abs(options.root)
+	if err != nil {
+		return nil, fmt.Errorf("lddSym root abs: %w", err)
+	}
+	options.root, err = filepath.EvalSymlinks(options.root)
+	if err != nil {
+		return nil, fmt.Errorf("lddSym root EvalSymlinks: %w", err)
+	}
+
+	base, err := parseBase(options)
 	if err != nil {
 		return nil, fmt.Errorf("parseBase: %w", err)
 	}
@@ -448,10 +459,9 @@ func (lddRes *LddResults) print() {
 }
 
 func main() {
-	var elfPath string
 	var options parseOptions
 	var jsonOut bool
-	flag.StringVar(&elfPath, "path", "", "path to file")
+	flag.StringVar(&options.elfPath, "path", "", "path to file")
 	flag.StringVar(&options.root, "root", "/", "directory to consider the root for SONAME resolution")
 	flag.BoolVar(&options.getFunc, "funcs", true, "track functions")
 	flag.BoolVar(&options.getObject, "objects", true, "track objects")
@@ -462,20 +472,7 @@ func main() {
 	flag.BoolVar(&options.android, "android", runtime.GOOS == "android", "search Android paths")
 	flag.Parse()
 
-	var err error
-
-	options.root, err = filepath.Abs(options.root)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	options.root, err = filepath.EvalSymlinks(options.root)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	lddRes, err := lddSym(elfPath, options)
+	lddRes, err := lddSym(options)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 )
@@ -20,6 +21,8 @@ type parseOptions struct {
 	getObject bool
 	getOther  bool
 	full      bool
+	linux     bool
+	android   bool
 }
 
 type sonameWithSearchdirs struct {
@@ -226,7 +229,7 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 		sonameNeeded := false
 		searchdirs = element.searchdirs
 
-		for _, path := range getSonamePaths(soname, searchdirs, base.options) {
+		for _, path := range getSonamePaths(soname, searchdirs) {
 			syms, sonames, runpath, archMatch, err := getSyms(path, base.machine, base.class)
 			if err != nil {
 				return fmt.Errorf("getSymMatches: %w", err)
@@ -317,7 +320,7 @@ func getSyms(path string, machine elf.Machine, class elf.Class) (syms, sonames, 
 	return syms, sonames, runpath, true, nil
 }
 
-func getSonamePaths(soname string, searchdirs []string, options parseOptions) []string {
+func getSonamePaths(soname string, searchdirs []string) []string {
 	if strings.Contains(soname, "/") {
 		path, err := filepath.Abs(soname)
 		if err != nil {
@@ -328,7 +331,7 @@ func getSonamePaths(soname string, searchdirs []string, options parseOptions) []
 
 	var ret []string
 	for _, dir := range searchdirs {
-		path := filepath.Join(options.root, dir, soname)
+		path := filepath.Join(dir, soname)
 		if fileExists(path) {
 			ret = append(ret, path)
 		}
@@ -455,6 +458,8 @@ func main() {
 	flag.BoolVar(&options.getOther, "other", false, "track other symbols")
 	flag.BoolVar(&options.full, "full", true, "do not exit out early if all symbols are resolved")
 	flag.BoolVar(&jsonOut, "json", false, "output json")
+	flag.BoolVar(&options.linux, "linux", runtime.GOOS == "linux", "search Linux paths")
+	flag.BoolVar(&options.android, "android", runtime.GOOS == "android", "search Android paths")
 	flag.Parse()
 
 	var err error
@@ -533,4 +538,53 @@ func uniqExistsPath(arr []string) []string {
 	}
 
 	return ret
+}
+
+var searchDirCached []string
+
+func getSearchdirs(runpath []string, options parseOptions) (ret []string) {
+	ret = append(ret, runpath...)
+	if searchDirCached == nil {
+		if options.linux {
+			searchDirCached = append(searchDirCached, getSearchDirCachedLinux(options)...)
+		}
+
+		if options.android {
+			searchDirCached = append(searchDirCached, getSearchDirCachedAndroid(options)...)
+		}
+
+	}
+
+	ret = append(ret, searchDirCached...)
+	return uniqExistsPath(ret)
+}
+
+func getSearchDirCachedLinux(options parseOptions) []string {
+	// based on glibc and musl defaults
+	var ret []string
+	for _, path := range []string{
+		"/lib64", "/lib",
+		"/usr/lib64", "/usr/lib",
+		"/usr/local/lib64", "/usr/local/lib",
+	} {
+		ret = append(ret, filepath.Join(options.root, path))
+	}
+
+	ret = append(ret, parseLdSoConfFile(filepath.Join(options.root, "/etc/ld.so.conf"), map[string]bool{})...)
+
+	return uniqExistsPath(ret)
+}
+
+func getSearchDirCachedAndroid(options parseOptions) []string {
+	// from https://android.googlesource.com/platform/bionic/+/refs/heads/main/linker/linker.cpp
+	var ret []string
+	for _, path := range []string{
+		"/system/lib64", "/system/lib",
+		"/odm/lib64", "/odm/lib",
+		"/vendor/lib64", "/vendor/lib",
+	} {
+		ret = append(ret, filepath.Join(options.root, path))
+	}
+
+	return uniqExistsPath(ret)
 }

@@ -13,7 +13,7 @@ func getSearchdirs(runpath []string, options parseOptions) (ret []string) {
 	}
 
 	ret = append(ret, searchDirCached...)
-	return uniqExistsPath(ret)
+	return ret
 }
 
 func getSearchDirCached(options parseOptions) []string {
@@ -24,5 +24,5 @@ func getSearchDirCached(options parseOptions) []string {
 		"/usr/local/lib64", "/usr/local/lib",
 	}
 	ret = append(ret, parseLdSoConfFile(filepath.Join(options.root, "/etc/ld.so.conf"), map[string]bool{})...)
-	return uniqExistsPath(ret)
+	return ret
 }

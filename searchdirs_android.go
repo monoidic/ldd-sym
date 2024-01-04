@@ -9,7 +9,7 @@ func getSearchdirs(runpath []string) (ret []string) {
 	}
 
 	ret = append(ret, searchDirCached)
-	return uniqExistsPath(ret)
+	return ret
 }
 
 func getSearchDirCached() []string {
@@ -19,5 +19,5 @@ func getSearchDirCached() []string {
 		"/odm/lib64", "/odm/lib",
 		"/vendor/lib64", "/vendor/lib",
 	}
-	return uniqExistsPath(ret)
+	return ret
 }

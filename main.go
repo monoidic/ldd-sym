@@ -92,7 +92,7 @@ func parseBase(options parseOptions) (*baseInfo, error) {
 		return nil, fmt.Errorf("parseBase DT_NEEDED: %w", err)
 	}
 
-	runpath, err := getRunPath(f, options.elfPath)
+	runpath, err := getRunPath(f, options.elfPath, "/")
 	if err != nil {
 		return nil, fmt.Errorf("parseBase getRunPath: %w", err)
 	}
@@ -107,7 +107,7 @@ func parseBase(options parseOptions) (*baseInfo, error) {
 	}, nil
 }
 
-func getRunPath(f *elf.File, elfPath string) ([]string, error) {
+func getRunPath(f *elf.File, elfPath, root string) ([]string, error) {
 	dirs := readRunPath(f)
 	if len(dirs) == 0 {
 		return nil, nil
@@ -120,13 +120,9 @@ func getRunPath(f *elf.File, elfPath string) ([]string, error) {
 	for _, dir := range dirs {
 		if strings.Contains(dir, "$ORIGIN") {
 			dir = strings.Replace(dir, "$ORIGIN", origin, -1)
-			dir, err = filepath.Abs(dir)
+			dir, err = absEvalSymlinks(dir, root)
 			if err != nil {
-				return nil, fmt.Errorf("getRunPath Abs: %w", err)
-			}
-			dir, err = filepath.EvalSymlinks(dir)
-			if err != nil {
-				return nil, fmt.Errorf("getRunPath EvalSymlinksOrigin: %w", err)
+				return nil, fmt.Errorf("getRunPath absEvalSymlinks: %w", err)
 			}
 		}
 		if !slices.Contains(out, dir) {
@@ -151,7 +147,7 @@ func readRunPath(f *elf.File) []string {
 	return nil
 }
 
-func parseLdSoConfFile(filename string, seenConfs map[string]bool) []string {
+func parseLdSoConfFile(filename string, seenConfs map[string]bool, options parseOptions) []string {
 	if seenConfs[filename] {
 		return nil
 	}
@@ -160,7 +156,7 @@ func parseLdSoConfFile(filename string, seenConfs map[string]bool) []string {
 	var out []string
 
 	// might not exist on non-glibc systems
-	ldSoConf, err := os.ReadFile(filename)
+	ldSoConf, err := os.ReadFile(filepath.Join(options.root, filename))
 	if err != nil {
 		return nil
 	}
@@ -179,13 +175,13 @@ func parseLdSoConfFile(filename string, seenConfs map[string]bool) []string {
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(filepath.Dir(filename), path)
 		}
-		filenames, err := filepath.Glob(path)
+		filenames, err := filepath.Glob(filepath.Join(options.root, path))
 		if err != nil {
 			continue
 		}
 
 		for _, filename := range filenames {
-			out = append(out, parseLdSoConfFile(filename, seenConfs)...)
+			out = append(out, parseLdSoConfFile(filename, seenConfs, options)...)
 		}
 	}
 
@@ -230,8 +226,8 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 		sonameNeeded := false
 		searchdirs = element.searchdirs
 
-		for _, path := range getSonamePaths(soname, searchdirs) {
-			syms, sonames, runpath, archMatch, err := getSyms(path, base.machine, base.class)
+		for _, path := range getSonamePaths(soname, searchdirs, base.options) {
+			syms, sonames, runpath, archMatch, err := getSyms(path, base)
 			if err != nil {
 				return fmt.Errorf("getSymMatches: %w", err)
 			}
@@ -284,14 +280,14 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 	return nil
 }
 
-func getSyms(path string, machine elf.Machine, class elf.Class) (syms, sonames, runpath []string, archMatch bool, err error) {
-	f, err := elf.Open(path)
+func getSyms(path string, base *baseInfo) (syms, sonames, runpath []string, archMatch bool, err error) {
+	f, err := elf.Open(filepath.Join(base.options.root, path))
 	if err != nil {
 		return nil, nil, nil, false, err
 	}
 	defer f.Close()
 
-	if !(f.Machine == machine && f.Class == class) {
+	if !(f.Machine == base.machine && f.Class == base.class) {
 		return nil, nil, nil, false, nil
 	}
 
@@ -313,7 +309,7 @@ func getSyms(path string, machine elf.Machine, class elf.Class) (syms, sonames, 
 	if err != nil {
 		return nil, nil, nil, false, fmt.Errorf("getSyms DynString: %w", err)
 	}
-	runpath, err = getRunPath(f, path)
+	runpath, err = getRunPath(f, path, base.options.root)
 	if err != nil {
 		return nil, nil, nil, false, err
 	}
@@ -321,9 +317,9 @@ func getSyms(path string, machine elf.Machine, class elf.Class) (syms, sonames, 
 	return syms, sonames, runpath, true, nil
 }
 
-func getSonamePaths(soname string, searchdirs []string) []string {
+func getSonamePaths(soname string, searchdirs []string, options parseOptions) []string {
 	if strings.Contains(soname, "/") {
-		path, err := filepath.Abs(soname)
+		path, err := absEvalSymlinks(soname, options.root)
 		if err != nil {
 			return nil
 		}
@@ -333,12 +329,11 @@ func getSonamePaths(soname string, searchdirs []string) []string {
 	var ret []string
 	for _, dir := range searchdirs {
 		path := filepath.Join(dir, soname)
-		if fileExists(path) {
-			ret = append(ret, path)
-		}
+		ret = append(ret, path)
 	}
 
-	return uniqExistsPath(ret)
+	ret = uniqExistsPath(ret, options)
+	return ret
 }
 
 func fileExists(path string) bool {
@@ -361,35 +356,26 @@ func lddSym(options parseOptions) (*LddResults, error) {
 	}
 	var err error
 
-	options.elfPath, err = filepath.Abs(options.elfPath)
+	options.elfPath, err = absEvalSymlinks(options.elfPath, "/")
 	if err != nil {
 		return nil, fmt.Errorf("elfPath abs: %w", err)
 	}
 
-	options.elfPath, err = filepath.EvalSymlinks(options.elfPath)
-	if err != nil {
-		return nil, fmt.Errorf("elfPath EvalSymlinks: %w", err)
-	}
-
-	options.root, err = filepath.Abs(options.root)
+	options.root, err = absEvalSymlinks(options.root, "/")
 	if err != nil {
 		return nil, fmt.Errorf("lddSym root abs: %w", err)
-	}
-	options.root, err = filepath.EvalSymlinks(options.root)
-	if err != nil {
-		return nil, fmt.Errorf("lddSym root EvalSymlinks: %w", err)
 	}
 
 	base, err := parseBase(options)
 	if err != nil {
-		return nil, fmt.Errorf("parseBase: %w", err)
+		return nil, fmt.Errorf("lddSym parseBase: %w", err)
 	}
 
 	searchdirs := getSearchdirs(base.runpath, base.options)
 
 	err = base.getSymMatches(searchdirs)
 	if err != nil {
-		return nil, fmt.Errorf("getSymMatches: %w", err)
+		return nil, fmt.Errorf("lddSym: %w", err)
 	}
 
 	var undefinedSyms []string
@@ -517,20 +503,41 @@ func (q *queue[T]) pop() (T, bool) {
 	return next, true
 }
 
+type stack[T any] struct {
+	l []T
+}
+
+func (s *stack[T]) pushMultipleRev(l []T) {
+	slices.Reverse(l)
+	s.l = append(s.l, l...)
+}
+
+func (s *stack[T]) pop() (T, bool) {
+	var next T
+	if len(s.l) == 0 {
+		return next, false
+	}
+
+	size := len(s.l)
+	next = s.l[size-1]
+	s.l = s.l[:size-1]
+
+	return next, true
+}
+
 // preserves order
-func uniqExistsPath(arr []string) []string {
+func uniqExistsPath(paths []string, options parseOptions) []string {
 	var ret []string
 	var err error
+	seen := map[string]bool{}
 
-	for _, path := range arr {
-		path, err = filepath.Abs(path)
-		if !(err == nil && fileExists(path)) {
+	for _, path := range paths {
+		path, err = absEvalSymlinks(path, options.root)
+		if err != nil || seen[path] {
 			continue
 		}
-		path, err = filepath.EvalSymlinks(path)
-		if err != nil || slices.Contains(ret, path) {
-			continue
-		}
+
+		seen[path] = true
 		ret = append(ret, path)
 	}
 
@@ -553,35 +560,109 @@ func getSearchdirs(runpath []string, options parseOptions) (ret []string) {
 	}
 
 	ret = append(ret, searchDirCached...)
-	return uniqExistsPath(ret)
+	ret = uniqExistsPath(ret, options)
+	return ret
 }
 
 func getSearchDirCachedLinux(options parseOptions) []string {
 	// based on glibc and musl defaults
-	var ret []string
-	for _, path := range []string{
+	ret := []string{
 		"/lib64", "/lib",
 		"/usr/lib64", "/usr/lib",
 		"/usr/local/lib64", "/usr/local/lib",
-	} {
-		ret = append(ret, filepath.Join(options.root, path))
 	}
 
-	ret = append(ret, parseLdSoConfFile(filepath.Join(options.root, "/etc/ld.so.conf"), map[string]bool{})...)
-
-	return uniqExistsPath(ret)
+	ret = append(ret, parseLdSoConfFile("/etc/ld.so.conf", map[string]bool{}, options)...)
+	ret = uniqExistsPath(ret, options)
+	return ret
 }
 
 func getSearchDirCachedAndroid(options parseOptions) []string {
 	// from https://android.googlesource.com/platform/bionic/+/refs/heads/main/linker/linker.cpp
-	var ret []string
-	for _, path := range []string{
+	ret := []string{
 		"/system/lib64", "/system/lib",
 		"/odm/lib64", "/odm/lib",
 		"/vendor/lib64", "/vendor/lib",
-	} {
-		ret = append(ret, filepath.Join(options.root, path))
 	}
 
-	return uniqExistsPath(ret)
+	ret = uniqExistsPath(ret, options)
+	return ret
+}
+
+const SYMLINK_LIMIT = 256
+
+// do abs and evaluate symlinks, but keep the returned path relative to the specified root
+func absEvalSymlinks(path, root string) (string, error) {
+	var err error
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+
+	sep := "/"
+	splitRoot := strings.Split(root, sep)
+	splitRoot[0] = sep
+	if len(splitRoot) > 1 && splitRoot[len(splitRoot)-1] == "" {
+		splitRoot = splitRoot[:len(splitRoot)-1]
+	}
+	retSl := append([]string{}, splitRoot...)
+
+	var pathStack stack[string]
+	pathStack.pushMultipleRev(strings.Split(path, sep)[1:])
+
+	var symlinksWalked int
+
+	for {
+		entry, exists := pathStack.pop()
+		if !exists {
+			break
+		}
+
+		if entry == "." {
+			continue
+		} else if entry == ".." {
+			if len(retSl) > len(splitRoot) {
+				retSl = retSl[:len(retSl)-1]
+			}
+			continue
+		}
+
+		entryPath := filepath.Join(append(retSl, entry)...)
+		fi, err := os.Lstat(entryPath)
+		if err != nil {
+			return "", err
+		}
+
+		mode := fi.Mode()
+		if mode&os.ModeSymlink == 0 {
+			retSl = append(retSl, entry)
+			continue
+		}
+
+		symlinksWalked++
+		if symlinksWalked > SYMLINK_LIMIT {
+			return "", errors.New("symlinks too deep")
+		}
+
+		target, err := os.Readlink(entryPath)
+		if err != nil {
+			return "", err
+		}
+
+		targetSplit := strings.Split(target, sep)
+		if filepath.IsAbs(target) {
+			retSl = append(retSl[:0], splitRoot...)
+			targetSplit = targetSplit[1:]
+		}
+		pathStack.pushMultipleRev(targetSplit)
+	}
+
+	if !fileExists(filepath.Join(append([]string{"/"}, retSl...)...)) {
+		return "", errors.New("non-existent path")
+	}
+
+	// discard root prefix
+	retSl = retSl[len(splitRoot):]
+
+	return filepath.Join(append([]string{"/"}, retSl...)...), nil
 }

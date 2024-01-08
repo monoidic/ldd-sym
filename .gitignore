@@ -1,2 +1,3 @@
 .*.swp
 ldd-sym
+*.prof

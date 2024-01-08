@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"slices"
 	"strings"
 )
@@ -120,7 +121,7 @@ func getRunPath(f *elf.File, elfPath, root string) ([]string, error) {
 	for _, dir := range dirs {
 		if strings.Contains(dir, "$ORIGIN") {
 			dir = strings.Replace(dir, "$ORIGIN", origin, -1)
-			dir, err = absEvalSymlinks(dir, root)
+			dir, err = absEvalSymlinks(dir, root, true)
 			if err != nil {
 				return nil, fmt.Errorf("getRunPath absEvalSymlinks: %w", err)
 			}
@@ -148,6 +149,12 @@ func readRunPath(f *elf.File) []string {
 }
 
 func parseLdSoConfFile(filename string, seenConfs map[string]bool, options parseOptions) []string {
+	var err error
+	filename, err = absEvalSymlinks(filename, options.root, true)
+	if err != nil {
+		return nil
+	}
+
 	if seenConfs[filename] {
 		return nil
 	}
@@ -175,12 +182,18 @@ func parseLdSoConfFile(filename string, seenConfs map[string]bool, options parse
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(filepath.Dir(filename), path)
 		}
+
+		path, err = absEvalSymlinks(path, options.root, false)
+		if err != nil {
+			continue
+		}
 		filenames, err := filepath.Glob(filepath.Join(options.root, path))
 		if err != nil {
 			continue
 		}
 
 		for _, filename := range filenames {
+			filename = removeRoot(filename, options.root)
 			out = append(out, parseLdSoConfFile(filename, seenConfs, options)...)
 		}
 	}
@@ -319,7 +332,7 @@ func getSyms(path string, base *baseInfo) (syms, sonames, runpath []string, arch
 
 func getSonamePaths(soname string, searchdirs []string, options parseOptions) []string {
 	if strings.Contains(soname, "/") {
-		path, err := absEvalSymlinks(soname, options.root)
+		path, err := absEvalSymlinks(soname, options.root, true)
 		if err != nil {
 			return nil
 		}
@@ -356,12 +369,12 @@ func lddSym(options parseOptions) (*LddResults, error) {
 	}
 	var err error
 
-	options.elfPath, err = absEvalSymlinks(options.elfPath, "/")
+	options.elfPath, err = absEvalSymlinks(options.elfPath, "/", true)
 	if err != nil {
 		return nil, fmt.Errorf("elfPath abs: %w", err)
 	}
 
-	options.root, err = absEvalSymlinks(options.root, "/")
+	options.root, err = absEvalSymlinks(options.root, "/", true)
 	if err != nil {
 		return nil, fmt.Errorf("lddSym root abs: %w", err)
 	}
@@ -447,8 +460,10 @@ func (lddRes *LddResults) print() {
 func main() {
 	var options parseOptions
 	var jsonOut bool
+	var profFile string
 	flag.StringVar(&options.elfPath, "path", "", "path to file")
 	flag.StringVar(&options.root, "root", "/", "directory to consider the root for SONAME resolution")
+	flag.StringVar(&profFile, "profile", "", "path to CPU pprof file (only profiled if set)")
 	flag.BoolVar(&options.getFunc, "funcs", true, "track functions")
 	flag.BoolVar(&options.getObject, "objects", true, "track objects")
 	flag.BoolVar(&options.getOther, "other", false, "track other symbols")
@@ -457,6 +472,12 @@ func main() {
 	flag.BoolVar(&options.linux, "linux", runtime.GOOS == "linux", "search Linux paths")
 	flag.BoolVar(&options.android, "android", runtime.GOOS == "android", "search Android paths")
 	flag.Parse()
+
+	if profFile != "" {
+		f := check1(os.Create(profFile))
+		check(pprof.StartCPUProfile(f))
+		defer pprof.StopCPUProfile()
+	}
 
 	lddRes, err := lddSym(options)
 	if err != nil {
@@ -525,14 +546,18 @@ func (s *stack[T]) pop() (T, bool) {
 	return next, true
 }
 
+func (s *stack[T]) isEmpty() bool {
+	return len(s.l) == 0
+}
+
 // preserves order
 func uniqExistsPath(paths []string, options parseOptions) []string {
 	var ret []string
 	var err error
-	seen := map[string]bool{}
+	seen := make(map[string]bool)
 
 	for _, path := range paths {
-		path, err = absEvalSymlinks(path, options.root)
+		path, err = absEvalSymlinks(path, options.root, true)
 		if err != nil || seen[path] {
 			continue
 		}
@@ -556,7 +581,6 @@ func getSearchdirs(runpath []string, options parseOptions) (ret []string) {
 		if options.android {
 			searchDirCached = append(searchDirCached, getSearchDirCachedAndroid(options)...)
 		}
-
 	}
 
 	ret = append(ret, searchDirCached...)
@@ -572,7 +596,7 @@ func getSearchDirCachedLinux(options parseOptions) []string {
 		"/usr/local/lib64", "/usr/local/lib",
 	}
 
-	ret = append(ret, parseLdSoConfFile("/etc/ld.so.conf", map[string]bool{}, options)...)
+	ret = append(ret, parseLdSoConfFile("/etc/ld.so.conf", make(map[string]bool), options)...)
 	ret = uniqExistsPath(ret, options)
 	return ret
 }
@@ -592,7 +616,7 @@ func getSearchDirCachedAndroid(options parseOptions) []string {
 const SYMLINK_LIMIT = 256
 
 // do abs and evaluate symlinks, but keep the returned path relative to the specified root
-func absEvalSymlinks(path, root string) (string, error) {
+func absEvalSymlinks(path, root string, mustExist bool) (string, error) {
 	var err error
 	path, err = filepath.Abs(path)
 	if err != nil {
@@ -605,7 +629,7 @@ func absEvalSymlinks(path, root string) (string, error) {
 	if len(splitRoot) > 1 && splitRoot[len(splitRoot)-1] == "" {
 		splitRoot = splitRoot[:len(splitRoot)-1]
 	}
-	retSl := append([]string{}, splitRoot...)
+	retSl := slices.Clone(splitRoot)
 
 	var pathStack stack[string]
 	pathStack.pushMultipleRev(strings.Split(path, sep)[1:])
@@ -630,6 +654,11 @@ func absEvalSymlinks(path, root string) (string, error) {
 		entryPath := filepath.Join(append(retSl, entry)...)
 		fi, err := os.Lstat(entryPath)
 		if err != nil {
+			if !mustExist && errors.Is(err, os.ErrNotExist) && pathStack.isEmpty() {
+				// final element in path that does not need to actually exist
+				retSl = append(retSl, entry)
+				break
+			}
 			return "", err
 		}
 
@@ -657,12 +686,15 @@ func absEvalSymlinks(path, root string) (string, error) {
 		pathStack.pushMultipleRev(targetSplit)
 	}
 
-	if !fileExists(filepath.Join(append([]string{"/"}, retSl...)...)) {
+	realPath := filepath.Join(append([]string{"/"}, retSl...)...)
+	if mustExist && !fileExists(realPath) {
 		return "", errors.New("non-existent path")
 	}
 
-	// discard root prefix
-	retSl = retSl[len(splitRoot):]
+	ret := removeRoot(realPath, root)
+	return ret, nil
+}
 
-	return filepath.Join(append([]string{"/"}, retSl...)...), nil
+func removeRoot(path, root string) string {
+	return filepath.Join("/", strings.TrimPrefix(path, root))
 }

@@ -23,7 +23,7 @@ type parseOptions struct {
 	getObject bool
 	getOther  bool
 	full      bool
-	linux     bool
+	std       bool
 	android   bool
 }
 
@@ -469,7 +469,7 @@ func main() {
 	flag.BoolVar(&options.getOther, "other", false, "track other symbols")
 	flag.BoolVar(&options.full, "full", true, "do not exit out early if all symbols are resolved")
 	flag.BoolVar(&jsonOut, "json", false, "output json")
-	flag.BoolVar(&options.linux, "linux", runtime.GOOS == "linux", "search Linux paths")
+	flag.BoolVar(&options.std, "std", true, "search standard paths")
 	flag.BoolVar(&options.android, "android", runtime.GOOS == "android", "search Android paths")
 	flag.Parse()
 
@@ -574,13 +574,15 @@ var searchDirCached []string
 func getSearchdirs(runpath []string, options parseOptions) (ret []string) {
 	ret = append(ret, runpath...)
 	if searchDirCached == nil {
-		if options.linux {
-			searchDirCached = append(searchDirCached, getSearchDirCachedLinux(options)...)
+		if options.std {
+			searchDirCached = append(searchDirCached, getSearchDirCachedStd(options)...)
 		}
 
 		if options.android {
 			searchDirCached = append(searchDirCached, getSearchDirCachedAndroid(options)...)
 		}
+
+		searchDirCached = uniqExistsPath(searchDirCached, options)
 	}
 
 	ret = append(ret, searchDirCached...)
@@ -588,8 +590,9 @@ func getSearchdirs(runpath []string, options parseOptions) (ret []string) {
 	return ret
 }
 
-func getSearchDirCachedLinux(options parseOptions) []string {
+func getSearchDirCachedStd(options parseOptions) []string {
 	// based on glibc and musl defaults
+	// also basically applicable to most non-Linux Unix-based systems
 	ret := []string{
 		"/lib64", "/lib",
 		"/usr/lib64", "/usr/lib",
@@ -597,7 +600,6 @@ func getSearchDirCachedLinux(options parseOptions) []string {
 	}
 
 	ret = append(ret, parseLdSoConfFile("/etc/ld.so.conf", make(map[string]bool), options)...)
-	ret = uniqExistsPath(ret, options)
 	return ret
 }
 
@@ -609,7 +611,6 @@ func getSearchDirCachedAndroid(options parseOptions) []string {
 		"/vendor/lib64", "/vendor/lib",
 	}
 
-	ret = uniqExistsPath(ret, options)
 	return ret
 }
 

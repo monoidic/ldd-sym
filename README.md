@@ -1,8 +1,36 @@
 # ldd-sym
 
+```
+Usage of ldd-sym:
+  -android
+        search Android paths
+  -full
+        do not exit out early if all symbols are resolved (default true)
+  -funcs
+        track functions (default true)
+  -json
+        output json
+  -objects
+        track objects (default true)
+  -other
+        track other symbols
+  -path string
+        path to file
+  -profile string
+        path to CPU pprof file (only profiled if set)
+  -root string
+        directory to consider the root for SONAME resolution (default "/")
+  -std
+        search standard paths (default true)
+```
+
 Basic utility to map symbol names to SONAMEs of libraries defining them.
 
-Only performs some rudimentary linker search path construction (parses `DT_RUNPATH`/`DT_RPATH` from file and performs basic `ld.so.conf` parsing).
+Performs linker search path construction based on `DT_RUNPATH`/`DT_RPATH` and `ld.so.conf`.
+
+Allows specifying a custom root directory; resolves all absolute and relative paths as if this directory were the root. This allows it to be used for quickly analyzing binaries in a dumped rootfs.
+
+Support json output.
 
 Comma-separates symbol names it encounters multiple definitions of and responds with "NO MATCHES" if no matches are found.
 

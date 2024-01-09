@@ -22,6 +22,8 @@ Usage of ldd-sym:
         directory to consider the root for SONAME resolution (default "/")
   -std
         search standard paths (default true)
+  -weak
+        get weak symbols
 ```
 
 Basic utility to map symbol names to SONAMEs of libraries defining them.

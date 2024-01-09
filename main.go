@@ -17,31 +17,32 @@ import (
 )
 
 type parseOptions struct {
-	elfPath   string
+	elfPath   multiPath
 	root      string
 	getFunc   bool
 	getObject bool
 	getOther  bool
 	full      bool
+	getWeak   bool
 	std       bool
 	android   bool
 }
 
 type sonameWithSearchdirs struct {
 	soname     string
-	searchdirs []string
+	searchdirs []multiPath
 }
 
 type baseInfo struct {
 	syms    []string
 	sonames []string
-	runpath []string
+	runpath []multiPath
 
 	symnameToSonames map[string][]string
-	sonamePaths      map[string][]string
+	sonamePaths      map[string][]multiPath
 	unneededSonames  []string
 
-	options parseOptions
+	options *parseOptions
 	machine elf.Machine
 	class   elf.Class
 }
@@ -52,14 +53,73 @@ type LddResults struct {
 	Sonames []string
 
 	SymnameToSonames map[string][]string
-	SonamePaths      map[string][]string
+	SonamePaths      map[string][]multiPath
 
 	UnneededSonames []string
 	UndefinedSyms   []string
 }
 
-func parseBase(options parseOptions) (*baseInfo, error) {
-	f, err := elf.Open(options.elfPath)
+type multiPath struct {
+	// on the system
+	realPath string
+	// relative to the -root= argument
+	rootPath string
+	// the -root= argument
+	root      string
+	mustExist bool
+	filled    bool
+}
+
+func (mp *multiPath) fill() (err error) {
+	if mp.filled {
+		return nil
+	}
+
+	if mp.root == "" {
+		return errors.New("no root in multipath")
+	}
+
+	if mp.realPath == "" && mp.rootPath == "" {
+		return errors.New("no path in multipath")
+	}
+
+	if mp.rootPath == "" {
+		mp.rootPath = removeRoot(mp.realPath, mp.root)
+	} else {
+		mp.rootPath, err = absEvalSymlinks(mp.rootPath, mp.root, mp.mustExist)
+		if err != nil {
+			return err
+		}
+		mp.realPath = filepath.Join(mp.root, mp.rootPath)
+	}
+
+	mp.filled = true
+	return nil
+}
+
+func (mp *multiPath) getReal() string {
+	if !mp.filled {
+		check(mp.fill())
+	}
+	return mp.realPath
+}
+
+func (mp *multiPath) getRooted() string {
+	if !mp.filled {
+		check(mp.fill())
+	}
+	return mp.rootPath
+}
+
+func (mp *multiPath) MarshalJSON() ([]byte, error) {
+	if !mp.filled {
+		panic("not filled")
+	}
+	return json.Marshal(mp.getRooted())
+}
+
+func parseBase(options *parseOptions) (*baseInfo, error) {
+	f, err := elf.Open(options.elfPath.getReal())
 	if err != nil {
 		return nil, err
 	}
@@ -76,12 +136,18 @@ func parseBase(options parseOptions) (*baseInfo, error) {
 		stt := elf.ST_TYPE(sym.Info)
 		isFunc := stt == elf.STT_FUNC
 		isObj := stt == elf.STT_OBJECT
+		stb := elf.ST_BIND(sym.Info)
+		isWeak := stb == elf.STB_WEAK
 		// does not match argument filters
 		if !((options.getFunc && isFunc) || (options.getObject && isObj) || (options.getOther && !(isFunc || isObj))) {
 			continue
 		}
 		// defined within this file
 		if sym.Section != elf.SHN_UNDEF {
+			continue
+		}
+		// weak symbol
+		if isWeak && !options.getWeak {
 			continue
 		}
 
@@ -93,7 +159,7 @@ func parseBase(options parseOptions) (*baseInfo, error) {
 		return nil, fmt.Errorf("parseBase DT_NEEDED: %w", err)
 	}
 
-	runpath, err := getRunPath(f, options.elfPath, "/")
+	runpath, err := getRunPath(f, &options.elfPath, options)
 	if err != nil {
 		return nil, fmt.Errorf("parseBase getRunPath: %w", err)
 	}
@@ -108,62 +174,93 @@ func parseBase(options parseOptions) (*baseInfo, error) {
 	}, nil
 }
 
-func getRunPath(f *elf.File, elfPath, root string) ([]string, error) {
-	dirs := readRunPath(f)
+func getRunPath(f *elf.File, fPath *multiPath, options *parseOptions) ([]multiPath, error) {
+	dirs := readRunPath(f, fPath.root)
 	if len(dirs) == 0 {
 		return nil, nil
 	}
 
-	origin := filepath.Dir(elfPath)
-	var out []string
-	var err error
-
-	for _, dir := range dirs {
-		if strings.Contains(dir, "$ORIGIN") {
-			dir = strings.Replace(dir, "$ORIGIN", origin, -1)
-			dir, err = absEvalSymlinks(dir, root, true)
-			if err != nil {
-				return nil, fmt.Errorf("getRunPath absEvalSymlinks: %w", err)
-			}
-		}
-		if !slices.Contains(out, dir) {
-			out = append(out, dir)
-		}
+	origin := multiPath{
+		rootPath:  filepath.Dir(fPath.getRooted()),
+		root:      fPath.root,
+		mustExist: true,
 	}
 
-	return out, nil
+	err := origin.fill()
+	if err != nil {
+		return nil, err
+	}
+
+	for i, dir := range dirs {
+		if !strings.Contains(dir.getRooted(), "$ORIGIN") {
+			continue
+		}
+		dir.rootPath = strings.Replace(dir.getRooted(), "$ORIGIN", origin.getRooted(), -1)
+		dir.filled = false
+		err = dir.fill()
+		if err != nil {
+			return nil, fmt.Errorf("getRunPath absEvalSymlinks: %w", err)
+		}
+		dirs[i] = dir
+	}
+
+	dirs = uniqExistsPath(dirs, options)
+
+	return dirs, nil
 }
 
-func readRunPath(f *elf.File) []string {
+func readRunPath(f *elf.File, root string) []multiPath {
 	runpath, err := f.DynString(elf.DT_RUNPATH)
 	if err == nil && len(runpath) != 0 {
-		return strings.Split(runpath[0], ":")
+		return rootedSlToMultiPathSl(strings.Split(runpath[0], ":"), root, true)
 	}
 
 	runpath, err = f.DynString(elf.DT_RPATH)
 	if err == nil && len(runpath) != 0 {
-		return strings.Split(runpath[0], ":")
+		return rootedSlToMultiPathSl(strings.Split(runpath[0], ":"), root, true)
 	}
 
 	return nil
 }
 
-func parseLdSoConfFile(filename string, seenConfs map[string]bool, options parseOptions) []string {
-	var err error
-	filename, err = absEvalSymlinks(filename, options.root, true)
-	if err != nil {
-		return nil
+func rootedSlToMultiPathSl(sl []string, root string, mustExist bool) []multiPath {
+	var out []multiPath
+
+	for _, s := range sl {
+		mp := multiPath{
+			rootPath:  s,
+			root:      root,
+			mustExist: mustExist,
+		}
+		if err := mp.fill(); err != nil {
+			continue
+		}
+		out = append(out, mp)
 	}
 
-	if seenConfs[filename] {
+	return out
+}
+
+func multiPathSlToRootedSl(sl []multiPath) []string {
+	ret := make([]string, len(sl))
+
+	for i, mp := range sl {
+		ret[i] = mp.getRooted()
+	}
+
+	return ret
+}
+
+func parseLdSoConfFile(filename multiPath, seenConfs set[string], options *parseOptions) []multiPath {
+	if seenConfs.contains(filename.getRooted()) {
 		return nil
 	}
-	seenConfs[filename] = true
+	seenConfs.add(filename.getRooted())
 
-	var out []string
+	var out []multiPath
 
 	// might not exist on non-glibc systems
-	ldSoConf, err := os.ReadFile(filepath.Join(options.root, filename))
+	ldSoConf, err := os.ReadFile(filename.getReal())
 	if err != nil {
 		return nil
 	}
@@ -174,41 +271,63 @@ func parseLdSoConfFile(filename string, seenConfs map[string]bool, options parse
 			continue
 		}
 		if !bytes.HasPrefix(line, []byte("include")) {
-			out = append(out, string(line))
+			path := string(line)
+			mp := multiPath{
+				rootPath:  path,
+				root:      options.root,
+				mustExist: true,
+			}
+			err = mp.fill()
+			if err == nil {
+				out = append(out, mp)
+			}
 			continue
 		}
 
 		path := string(line[8:])
 		if !filepath.IsAbs(path) {
-			path = filepath.Join(filepath.Dir(filename), path)
+			path = filepath.Join(filepath.Dir(filename.getRooted()), path)
 		}
 
-		path, err = absEvalSymlinks(path, options.root, false)
+		mp := multiPath{
+			rootPath:  path,
+			root:      options.root,
+			mustExist: false,
+		}
+		err = mp.fill()
 		if err != nil {
 			continue
 		}
-		filenames, err := filepath.Glob(filepath.Join(options.root, path))
+
+		filenames, err := filepath.Glob(mp.getReal())
 		if err != nil {
 			continue
 		}
 
 		for _, filename := range filenames {
-			filename = removeRoot(filename, options.root)
-			out = append(out, parseLdSoConfFile(filename, seenConfs, options)...)
+			mp := multiPath{
+				realPath:  filename,
+				root:      options.root,
+				mustExist: true,
+			}
+			err = mp.fill()
+			if err == nil {
+				out = append(out, parseLdSoConfFile(mp, seenConfs, options)...)
+			}
 		}
 	}
 
 	return out
 }
 
-func (base *baseInfo) getSymMatches(searchdirs []string) error {
+func (base *baseInfo) getSymMatches(searchdirs []multiPath) error {
 	base.symnameToSonames = make(map[string][]string, len(base.syms))
-	requiredSymnames := make(map[string]bool, len(base.syms))
+	requiredSymnames := newSet[string]()
 	for _, sym := range base.syms {
-		requiredSymnames[sym] = true
+		requiredSymnames.add(sym)
 	}
 
-	seenSonames := make(map[string]bool)
+	seenSonames := newSet[string]()
 	var sonameQueue queue[sonameWithSearchdirs]
 
 	for _, soname := range base.sonames {
@@ -216,12 +335,12 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 			soname:     soname,
 			searchdirs: searchdirs,
 		})
-		seenSonames[soname] = true
+		seenSonames.add(soname)
 	}
 
 	unneededSonames := slices.Clone(base.sonames)
 
-	sonamePaths := make(map[string][]string)
+	sonamePaths := make(map[string][]multiPath)
 
 	var allSonames []string
 
@@ -240,7 +359,7 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 		searchdirs = element.searchdirs
 
 		for _, path := range getSonamePaths(soname, searchdirs, base.options) {
-			syms, sonames, runpath, archMatch, err := getSyms(path, base)
+			syms, sonames, runpath, archMatch, err := getSyms(&path, base)
 			if err != nil {
 				return fmt.Errorf("getSymMatches: %w", err)
 			}
@@ -254,17 +373,17 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 			}
 
 			for _, soname := range sonames {
-				if !seenSonames[soname] {
+				if !seenSonames.contains(soname) {
 					sonameQueue.push(sonameWithSearchdirs{
 						soname:     soname,
 						searchdirs: getSearchdirs(runpath, base.options),
 					})
-					seenSonames[soname] = true
+					seenSonames.add(soname)
 				}
 			}
 
 			for _, sym := range syms {
-				if requiredSymnames[sym] {
+				if requiredSymnames.contains(sym) {
 					sl := base.symnameToSonames[sym]
 					if !slices.Contains(sl, soname) {
 						base.symnameToSonames[sym] = append(sl, soname)
@@ -293,8 +412,8 @@ func (base *baseInfo) getSymMatches(searchdirs []string) error {
 	return nil
 }
 
-func getSyms(path string, base *baseInfo) (syms, sonames, runpath []string, archMatch bool, err error) {
-	f, err := elf.Open(filepath.Join(base.options.root, path))
+func getSyms(path *multiPath, base *baseInfo) (syms, sonames []string, runpath []multiPath, archMatch bool, err error) {
+	f, err := elf.Open(path.getReal())
 	if err != nil {
 		return nil, nil, nil, false, err
 	}
@@ -304,7 +423,7 @@ func getSyms(path string, base *baseInfo) (syms, sonames, runpath []string, arch
 		return nil, nil, nil, false, nil
 	}
 
-	seen := make(map[string]bool)
+	seen := newSet[string]()
 
 	dynSyms, err := f.DynamicSymbols()
 	if err != nil {
@@ -312,9 +431,9 @@ func getSyms(path string, base *baseInfo) (syms, sonames, runpath []string, arch
 	}
 
 	for _, sym := range dynSyms {
-		if sym.Section != elf.SHN_UNDEF && !seen[sym.Name] {
+		if sym.Section != elf.SHN_UNDEF && !seen.contains(sym.Name) {
 			syms = append(syms, sym.Name)
-			seen[sym.Name] = true
+			seen.add(sym.Name)
 		}
 	}
 
@@ -322,7 +441,7 @@ func getSyms(path string, base *baseInfo) (syms, sonames, runpath []string, arch
 	if err != nil {
 		return nil, nil, nil, false, fmt.Errorf("getSyms DynString: %w", err)
 	}
-	runpath, err = getRunPath(f, path, base.options.root)
+	runpath, err = getRunPath(f, path, base.options)
 	if err != nil {
 		return nil, nil, nil, false, err
 	}
@@ -330,21 +449,31 @@ func getSyms(path string, base *baseInfo) (syms, sonames, runpath []string, arch
 	return syms, sonames, runpath, true, nil
 }
 
-func getSonamePaths(soname string, searchdirs []string, options parseOptions) []string {
+func getSonamePaths(soname string, searchdirs []multiPath, options *parseOptions) []multiPath {
 	if strings.Contains(soname, "/") {
 		path, err := absEvalSymlinks(soname, options.root, true)
 		if err != nil {
 			return nil
 		}
-		return []string{path}
+		mp := multiPath{
+			rootPath:  path,
+			root:      options.root,
+			mustExist: true,
+		}
+		err = mp.fill()
+		if err != nil {
+			return nil
+		}
+		return []multiPath{mp}
 	}
 
-	var ret []string
+	var paths []string
 	for _, dir := range searchdirs {
-		path := filepath.Join(dir, soname)
-		ret = append(ret, path)
+		path := filepath.Join(dir.getRooted(), soname)
+		paths = append(paths, path)
 	}
 
+	ret := rootedSlToMultiPathSl(paths, options.root, true)
 	ret = uniqExistsPath(ret, options)
 	return ret
 }
@@ -359,19 +488,16 @@ func fileExists(path string) bool {
 	*/
 }
 
-func lddSym(options parseOptions) (*LddResults, error) {
-	if options.elfPath == "" {
-		return nil, errors.New("path not specified")
+func lddSym(options *parseOptions) (*LddResults, error) {
+	options.elfPath.root = "/"
+	options.elfPath.mustExist = true
+	err := options.elfPath.fill()
+	if err != nil {
+		return nil, fmt.Errorf("elfPath abs: %w", err)
 	}
 
 	if !(options.getFunc || options.getObject || options.getOther) {
 		return nil, errors.New("all symbol types disabled")
-	}
-	var err error
-
-	options.elfPath, err = absEvalSymlinks(options.elfPath, "/", true)
-	if err != nil {
-		return nil, fmt.Errorf("elfPath abs: %w", err)
 	}
 
 	options.root, err = absEvalSymlinks(options.root, "/", true)
@@ -418,10 +544,11 @@ func (lddRes *LddResults) noNil() {
 		}
 	}
 
-	for _, mapPtr := range []*map[string][]string{&lddRes.SonamePaths, &lddRes.SymnameToSonames} {
-		if *mapPtr == nil {
-			*mapPtr = make(map[string][]string)
-		}
+	if lddRes.SonamePaths == nil {
+		lddRes.SonamePaths = make(map[string][]multiPath)
+	}
+	if lddRes.SymnameToSonames == nil {
+		lddRes.SymnameToSonames = make(map[string][]string)
 	}
 }
 
@@ -440,7 +567,7 @@ func (lddRes *LddResults) print() {
 
 	for _, soname := range lddRes.Sonames {
 		paths := lddRes.SonamePaths[soname]
-		fmt.Printf("%s: %s\n", soname, strings.Join(paths, ", "))
+		fmt.Printf("%s: %s\n", soname, strings.Join(multiPathSlToRootedSl(paths), ", "))
 	}
 
 	if !(len(lddRes.UnneededSonames) > 0 || len(lddRes.UndefinedSyms) > 0) {
@@ -461,7 +588,7 @@ func main() {
 	var options parseOptions
 	var jsonOut bool
 	var profFile string
-	flag.StringVar(&options.elfPath, "path", "", "path to file")
+	flag.StringVar(&options.elfPath.rootPath, "path", "", "path to file")
 	flag.StringVar(&options.root, "root", "/", "directory to consider the root for SONAME resolution")
 	flag.StringVar(&profFile, "profile", "", "path to CPU pprof file (only profiled if set)")
 	flag.BoolVar(&options.getFunc, "funcs", true, "track functions")
@@ -471,6 +598,7 @@ func main() {
 	flag.BoolVar(&jsonOut, "json", false, "output json")
 	flag.BoolVar(&options.std, "std", true, "search standard paths")
 	flag.BoolVar(&options.android, "android", runtime.GOOS == "android", "search Android paths")
+	flag.BoolVar(&options.getWeak, "weak", false, "get weak symbols")
 	flag.Parse()
 
 	if profFile != "" {
@@ -479,7 +607,7 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	lddRes, err := lddSym(options)
+	lddRes, err := lddSym(&options)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -550,28 +678,46 @@ func (s *stack[T]) isEmpty() bool {
 	return len(s.l) == 0
 }
 
+type set[T comparable] struct {
+	m map[T]struct{}
+}
+
+func newSet[T comparable]() set[T] {
+	return set[T]{
+		m: make(map[T]struct{}),
+	}
+}
+
+func (s *set[T]) add(e T) {
+	s.m[e] = struct{}{}
+}
+
+func (s *set[T]) contains(e T) bool {
+	_, ok := s.m[e]
+	return ok
+}
+
 // preserves order
-func uniqExistsPath(paths []string, options parseOptions) []string {
-	var ret []string
-	var err error
-	seen := make(map[string]bool)
+func uniqExistsPath(paths []multiPath, options *parseOptions) []multiPath {
+	var ret []multiPath
+	seen := newSet[string]()
 
 	for _, path := range paths {
-		path, err = absEvalSymlinks(path, options.root, true)
-		if err != nil || seen[path] {
+		err := path.fill()
+		if err != nil || seen.contains(path.getRooted()) {
 			continue
 		}
 
-		seen[path] = true
+		seen.add(path.getRooted())
 		ret = append(ret, path)
 	}
 
 	return ret
 }
 
-var searchDirCached []string
+var searchDirCached []multiPath
 
-func getSearchdirs(runpath []string, options parseOptions) (ret []string) {
+func getSearchdirs(runpath []multiPath, options *parseOptions) (ret []multiPath) {
 	ret = append(ret, runpath...)
 	if searchDirCached == nil {
 		if options.std {
@@ -590,27 +736,38 @@ func getSearchdirs(runpath []string, options parseOptions) (ret []string) {
 	return ret
 }
 
-func getSearchDirCachedStd(options parseOptions) []string {
+func getSearchDirCachedStd(options *parseOptions) []multiPath {
 	// based on glibc and musl defaults
 	// also basically applicable to most non-Linux Unix-based systems
-	ret := []string{
+	paths := []string{
 		"/lib64", "/lib",
 		"/usr/lib64", "/usr/lib",
 		"/usr/local/lib64", "/usr/local/lib",
 	}
 
-	ret = append(ret, parseLdSoConfFile("/etc/ld.so.conf", make(map[string]bool), options)...)
+	ret := rootedSlToMultiPathSl(paths, options.root, true)
+
+	mp := multiPath{
+		rootPath:  "/etc/ld.so.conf",
+		root:      options.root,
+		mustExist: true,
+	}
+	if mp.fill() == nil {
+		ret = append(ret, parseLdSoConfFile(mp, newSet[string](), options)...)
+	}
+
 	return ret
 }
 
-func getSearchDirCachedAndroid(options parseOptions) []string {
+func getSearchDirCachedAndroid(options *parseOptions) []multiPath {
 	// from https://android.googlesource.com/platform/bionic/+/refs/heads/main/linker/linker.cpp
-	ret := []string{
+	paths := []string{
 		"/system/lib64", "/system/lib",
 		"/odm/lib64", "/odm/lib",
 		"/vendor/lib64", "/vendor/lib",
 	}
 
+	ret := rootedSlToMultiPathSl(paths, options.root, true)
 	return ret
 }
 

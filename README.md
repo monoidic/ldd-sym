@@ -10,6 +10,8 @@ Usage of ldd-sym:
         track functions (default true)
   -json
         output json
+  -ldpath string
+        set LD_LIBRARY_PATH
   -objects
         track objects (default true)
   -other

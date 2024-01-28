@@ -14,8 +14,7 @@ func uniqExistsPath(paths []multiPath, options *parseOptions) []multiPath {
 	seen := newSet[string]()
 
 	for _, path := range paths {
-		err := path.fill()
-		if err != nil || seen.contains(path.getRooted()) {
+		if seen.contains(path.getRooted()) {
 			continue
 		}
 
@@ -34,6 +33,10 @@ func absEvalSymlinks(path, root string, mustExist bool) (string, error) {
 	path, err = filepath.Abs(path)
 	if err != nil {
 		return "", err
+	}
+
+	if root == "/" {
+		return filepath.EvalSymlinks(path)
 	}
 
 	sep := "/"
@@ -109,6 +112,9 @@ func absEvalSymlinks(path, root string, mustExist bool) (string, error) {
 }
 
 func removeRoot(path, root string) string {
+	if root == "/" {
+		return path
+	}
 	return filepath.Join("/", strings.TrimPrefix(path, root))
 }
 

@@ -93,7 +93,6 @@ func getRunPath(f *elf.File, fPath *multiPath, options *parseOptions) ([]multiPa
 			continue
 		}
 		dir.rootPath = strings.Replace(dir.getRooted(), "$ORIGIN", origin.getRooted(), -1)
-		dir.filled = false
 		err = dir.fill()
 		if err != nil {
 			return nil, fmt.Errorf("getRunPath absEvalSymlinks: %w", err)
@@ -215,7 +214,7 @@ func (base *baseInfo) getSymMatches(searchdirs []multiPath) error {
 func getSyms(path *multiPath, base *baseInfo) (syms, sonames []string, runpath []multiPath, archMatch bool, err error) {
 	f, err := elf.Open(path.getReal())
 	if err != nil {
-		return nil, nil, nil, false, err
+		return nil, nil, nil, false, fmt.Errorf("elf.Open: %w", err)
 	}
 	defer f.Close()
 
@@ -243,7 +242,7 @@ func getSyms(path *multiPath, base *baseInfo) (syms, sonames []string, runpath [
 	}
 	runpath, err = getRunPath(f, path, base.options)
 	if err != nil {
-		return nil, nil, nil, false, err
+		return nil, nil, nil, false, fmt.Errorf("runpath: %w", err)
 	}
 
 	return syms, sonames, runpath, true, nil
@@ -381,6 +380,7 @@ func main() {
 	flag.StringVar(&options.elfPath.rootPath, "path", "", "path to file")
 	flag.StringVar(&options.root, "root", "/", "directory to consider the root for SONAME resolution")
 	flag.StringVar(&profFile, "profile", "", "path to CPU pprof file (only profiled if set)")
+	flag.StringVar(&options.ldLibraryPath, "ldpath", "", "set LD_LIBRARY_PATH")
 	flag.BoolVar(&options.getFunc, "funcs", true, "track functions")
 	flag.BoolVar(&options.getObject, "objects", true, "track objects")
 	flag.BoolVar(&options.getOther, "other", false, "track other symbols")

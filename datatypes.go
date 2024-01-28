@@ -73,15 +73,16 @@ func (s *set[T]) contains(e T) bool {
 }
 
 type parseOptions struct {
-	elfPath   multiPath
-	root      string
-	getFunc   bool
-	getObject bool
-	getOther  bool
-	full      bool
-	getWeak   bool
-	std       bool
-	android   bool
+	elfPath       multiPath
+	root          string
+	ldLibraryPath string
+	getFunc       bool
+	getObject     bool
+	getOther      bool
+	full          bool
+	getWeak       bool
+	std           bool
+	android       bool
 }
 
 type sonameWithSearchdirs struct {
@@ -123,14 +124,9 @@ type multiPath struct {
 	// the -root= argument
 	root      string
 	mustExist bool
-	filled    bool
 }
 
 func (mp *multiPath) fill() (err error) {
-	if mp.filled {
-		return nil
-	}
-
 	if mp.root == "" {
 		return errors.New("no root in multipath")
 	}
@@ -141,7 +137,7 @@ func (mp *multiPath) fill() (err error) {
 
 	if mp.rootPath == "" {
 		mp.rootPath = removeRoot(mp.realPath, mp.root)
-	} else {
+	} else if mp.realPath == "" {
 		mp.rootPath, err = absEvalSymlinks(mp.rootPath, mp.root, mp.mustExist)
 		if err != nil {
 			return err
@@ -149,27 +145,23 @@ func (mp *multiPath) fill() (err error) {
 		mp.realPath = filepath.Join(mp.root, mp.rootPath)
 	}
 
-	mp.filled = true
 	return nil
 }
 
 func (mp *multiPath) getReal() string {
-	if !mp.filled {
+	if mp.realPath == "" {
 		check(mp.fill())
 	}
 	return mp.realPath
 }
 
 func (mp *multiPath) getRooted() string {
-	if !mp.filled {
+	if mp.rootPath == "" {
 		check(mp.fill())
 	}
 	return mp.rootPath
 }
 
 func (mp *multiPath) MarshalJSON() ([]byte, error) {
-	if !mp.filled {
-		panic("not filled")
-	}
 	return json.Marshal(mp.getRooted())
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 var searchDirCached []multiPath
@@ -11,6 +12,10 @@ var searchDirCached []multiPath
 func getSearchdirs(runpath []multiPath, options *parseOptions) (ret []multiPath) {
 	ret = append(ret, runpath...)
 	if searchDirCached == nil {
+		if options.ldLibraryPath != "" {
+			searchDirCached = append(searchDirCached, rootedSlToMultiPathSl(strings.Split(options.ldLibraryPath, ":"), options.root, true)...)
+		}
+
 		if options.std {
 			searchDirCached = append(searchDirCached, getSearchDirCachedStd(options)...)
 		}
@@ -105,7 +110,7 @@ func parseLdSoConfFile(filename multiPath, seenConfs set[string], options *parse
 			root:      options.root,
 			mustExist: false,
 		}
-		err = mp.fill()
+		err := mp.fill()
 		if err != nil {
 			continue
 		}
@@ -121,7 +126,7 @@ func parseLdSoConfFile(filename multiPath, seenConfs set[string], options *parse
 				root:      options.root,
 				mustExist: true,
 			}
-			err = mp.fill()
+			err := mp.fill()
 			if err == nil {
 				out = append(out, parseLdSoConfFile(mp, seenConfs, options)...)
 			}

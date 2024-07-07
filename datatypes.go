@@ -53,18 +53,20 @@ func (s *stack[T]) isEmpty() bool {
 	return len(s.l) == 0
 }
 
+type empty struct{}
+
 type set[T comparable] struct {
-	m map[T]struct{}
+	m map[T]empty
 }
 
 func newSet[T comparable]() set[T] {
 	return set[T]{
-		m: make(map[T]struct{}),
+		m: make(map[T]empty),
 	}
 }
 
 func (s *set[T]) add(e T) {
-	s.m[e] = struct{}{}
+	s.m[e] = empty{}
 }
 
 func (s *set[T]) contains(e T) bool {
@@ -136,7 +138,7 @@ func (mp *multiPath) fill() (err error) {
 	}
 
 	if mp.rootPath == "" {
-		mp.rootPath = removeRoot(mp.realPath, mp.root)
+		mp.rootPath = removeRoot(mp.realPath, mp.root, "/")
 	} else if mp.realPath == "" {
 		mp.rootPath, err = absEvalSymlinks(mp.rootPath, mp.root, mp.mustExist)
 		if err != nil {

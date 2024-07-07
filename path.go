@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"iter"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,34 +10,32 @@ import (
 )
 
 // preserves order
-func uniqExistsPath(paths []multiPath, options *parseOptions) []multiPath {
-	var ret []multiPath
+func uniqExistsPath(paths iter.Seq[multiPath]) iter.Seq[multiPath] {
 	seen := newSet[string]()
-
-	for _, path := range paths {
-		if seen.contains(path.getRooted()) {
-			continue
+	return func(yield func(multiPath) bool) {
+		for path := range paths {
+			rooted := path.getRooted()
+			if seen.contains(rooted) {
+				continue
+			}
+			seen.add(rooted)
+			if !pathExists(rooted) {
+				continue
+			}
+			if !yield(path) {
+				return
+			}
 		}
-
-		seen.add(path.getRooted())
-		ret = append(ret, path)
 	}
-
-	return ret
 }
 
 const SYMLINK_LIMIT = 256
 
 // do abs and evaluate symlinks, but keep the returned path relative to the specified root
 func absEvalSymlinks(path, root string, mustExist bool) (string, error) {
-	var err error
-	path, err = filepath.Abs(path)
+	path, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
-	}
-
-	if root == "/" {
-		return filepath.EvalSymlinks(path)
 	}
 
 	sep := "/"
@@ -78,8 +77,7 @@ func absEvalSymlinks(path, root string, mustExist bool) (string, error) {
 			return "", err
 		}
 
-		mode := fi.Mode()
-		if mode&os.ModeSymlink == 0 {
+		if mode := fi.Mode(); mode&os.ModeSymlink == 0 {
 			retSl = append(retSl, entry)
 			continue
 		}
@@ -102,56 +100,48 @@ func absEvalSymlinks(path, root string, mustExist bool) (string, error) {
 		pathStack.pushMultipleRev(targetSplit)
 	}
 
-	realPath := filepath.Join(append([]string{"/"}, retSl...)...)
-	if mustExist && !fileExists(realPath) {
+	realPath := filepath.Join(append([]string{sep}, retSl...)...)
+	if mustExist && !pathExists(realPath) {
 		return "", errors.New("non-existent path")
 	}
 
-	ret := removeRoot(realPath, root)
+	ret := removeRoot(realPath, root, sep)
 	return ret, nil
 }
 
-func removeRoot(path, root string) string {
-	if root == "/" {
-		return path
-	}
-	return filepath.Join("/", strings.TrimPrefix(path, root))
+func removeRoot(path, root, sep string) string {
+	return filepath.Join(sep, strings.TrimPrefix(path, root))
 }
 
-func rootedSlToMultiPathSl(sl []string, root string, mustExist bool) []multiPath {
-	var out []multiPath
-
-	for _, s := range sl {
-		mp := multiPath{
-			rootPath:  s,
-			root:      root,
-			mustExist: mustExist,
+func rootedToMultiPath(seq iter.Seq[string], root string, mustExist bool) iter.Seq[multiPath] {
+	return func(yield func(multiPath) bool) {
+		for s := range seq {
+			mp := multiPath{
+				rootPath:  s,
+				root:      root,
+				mustExist: mustExist,
+			}
+			if err := mp.fill(); err != nil {
+				continue
+			}
+			if !yield(mp) {
+				return
+			}
 		}
-		if err := mp.fill(); err != nil {
-			continue
+	}
+}
+
+func multiPathToRooted(seq iter.Seq[multiPath]) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		for mp := range seq {
+			if !yield(mp.getRooted()) {
+				return
+			}
 		}
-		out = append(out, mp)
 	}
-
-	return out
 }
 
-func multiPathSlToRootedSl(sl []multiPath) []string {
-	ret := make([]string, len(sl))
-
-	for i, mp := range sl {
-		ret[i] = mp.getRooted()
-	}
-
-	return ret
-}
-
-func fileExists(path string) bool {
+func pathExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
-	/*
-		if !errors.Is(err, os.ErrNotExist) {
-			check(err)
-		}
-	*/
 }

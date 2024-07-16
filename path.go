@@ -12,21 +12,14 @@ import (
 // preserves order
 func uniqExistsPath(paths iter.Seq[multiPath]) iter.Seq[multiPath] {
 	seen := newSet[string]()
-	return func(yield func(multiPath) bool) {
-		for path := range paths {
-			rooted := path.getRooted()
-			if seen.contains(rooted) {
-				continue
-			}
-			seen.add(rooted)
-			if !pathExists(rooted) {
-				continue
-			}
-			if !yield(path) {
-				return
-			}
+	return seqMap(paths, func(path multiPath) (multiPath, bool) {
+		rooted := path.getRooted()
+		if seen.contains(rooted) {
+			return path, false
 		}
-	}
+		seen.add(rooted)
+		return path, pathExists(rooted)
+	})
 }
 
 const SYMLINK_LIMIT = 256
@@ -114,31 +107,19 @@ func removeRoot(path, root, sep string) string {
 }
 
 func rootedToMultiPath(seq iter.Seq[string], root string, mustExist bool) iter.Seq[multiPath] {
-	return func(yield func(multiPath) bool) {
-		for s := range seq {
-			mp := multiPath{
-				rootPath:  s,
-				root:      root,
-				mustExist: mustExist,
-			}
-			if err := mp.fill(); err != nil {
-				continue
-			}
-			if !yield(mp) {
-				return
-			}
+	return seqMap(seq, func(s string) (multiPath, bool) {
+		mp := multiPath{
+			rootPath:  s,
+			root:      root,
+			mustExist: mustExist,
 		}
-	}
+		err := mp.fill()
+		return mp, err == nil
+	})
 }
 
 func multiPathToRooted(seq iter.Seq[multiPath]) iter.Seq[string] {
-	return func(yield func(string) bool) {
-		for mp := range seq {
-			if !yield(mp.getRooted()) {
-				return
-			}
-		}
-	}
+	return seqMap(seq, func(mp multiPath) (string, bool) { return mp.getRooted(), true })
 }
 
 func pathExists(path string) bool {

@@ -11,26 +11,27 @@ import (
 var searchDirCached []multiPath
 
 func getSearchdirs(runpath []multiPath, options *parseOptions) iter.Seq[multiPath] {
-	if searchDirCached == nil {
-		var seq iter.Seq[multiPath]
-		if options.ldLibraryPath != "" {
-			seq = concatSeq(seq, rootedToMultiPath(sliceToSeq(strings.Split(options.ldLibraryPath, ":")), options.root, true))
-		}
-
-		if options.std {
-			seq = concatSeq(seq, getSearchDirCachedStd(options.root))
-		}
-
-		if options.android {
-			seq = concatSeq(seq, getSearchDirCachedAndroid(options.root))
-		}
-
-		searchDirCached = collect(uniqExistsPath(seq))
+	if searchDirCached != nil {
+		ret := concatSeq(sliceToSeq(runpath), sliceToSeq(searchDirCached))
+		ret = uniqExistsPath(ret)
+		return ret
 	}
 
-	ret := concatSeq(sliceToSeq(runpath), sliceToSeq(searchDirCached))
-	ret = uniqExistsPath(ret)
-	return ret
+	var seq iter.Seq[multiPath]
+	if options.ldLibraryPath != "" {
+		seq = concatSeq(seq, rootedToMultiPath(sliceToSeq(strings.Split(options.ldLibraryPath, ":")), options.root, true))
+	}
+
+	if options.std {
+		seq = concatSeq(seq, getSearchDirCachedStd(options.root))
+	}
+
+	if options.android {
+		seq = concatSeq(seq, getSearchDirCachedAndroid(options.root))
+	}
+
+	searchDirCached = collect(uniqExistsPath(seq))
+	return getSearchdirs(runpath, options)
 }
 
 func getSearchDirCachedStd(root string) iter.Seq[multiPath] {

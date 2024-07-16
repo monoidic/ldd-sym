@@ -59,3 +59,17 @@ func uniq[T comparable](seq iter.Seq[T]) iter.Seq[T] {
 		}
 	}
 }
+
+func seqMap[T any, V any](seq iter.Seq[T], f func(T) (V, bool)) iter.Seq[V] {
+	return func(yield func(V) bool) {
+		for v := range seq {
+			v, keep := f(v)
+			if !keep {
+				continue
+			}
+			if !yield(v) {
+				return
+			}
+		}
+	}
+}

@@ -47,31 +47,30 @@ func parseBase(options *parseOptions) (*baseInfo, error) {
 }
 
 func getDynSyms(seq iter.Seq[elf.Symbol], options *parseOptions) iter.Seq[string] {
-	return func(yield func(string) bool) {
-		for sym := range seq {
-			stt := elf.ST_TYPE(sym.Info)
-			isFunc := stt == elf.STT_FUNC
-			isObj := stt == elf.STT_OBJECT
-			stb := elf.ST_BIND(sym.Info)
-			isWeak := stb == elf.STB_WEAK
-			// does not match argument filters
-			if !((options.getFunc && isFunc) || (options.getObject && isObj) || (options.getOther && !(isFunc || isObj))) {
-				continue
-			}
-			// defined within this file
-			if sym.Section != elf.SHN_UNDEF {
-				continue
-			}
-			// weak symbol
-			if isWeak && !options.getWeak {
-				continue
-			}
+	return seqMap(seq, func(sym elf.Symbol) (string, bool) {
+		stt := elf.ST_TYPE(sym.Info)
+		isFunc := stt == elf.STT_FUNC
+		isObj := stt == elf.STT_OBJECT
+		stb := elf.ST_BIND(sym.Info)
+		isWeak := stb == elf.STB_WEAK
 
-			if !yield(sym.Name) {
-				return
-			}
+		// does not match argument filters
+		if !((options.getFunc && isFunc) || (options.getObject && isObj) || (options.getOther && !(isFunc || isObj))) {
+			return "", false
 		}
-	}
+
+		// defined within this file
+		if sym.Section != elf.SHN_UNDEF {
+			return "", false
+		}
+
+		// weak symbol
+		if isWeak && !options.getWeak {
+			return "", false
+		}
+
+		return sym.Name, true
+	})
 }
 
 func getRunPath(f *elf.File, fPath multiPath) iter.Seq[multiPath] {
@@ -91,23 +90,18 @@ func getRunPath(f *elf.File, fPath multiPath) iter.Seq[multiPath] {
 }
 
 func originize(seq iter.Seq[multiPath], origin multiPath) iter.Seq[multiPath] {
-	return func(yield func(multiPath) bool) {
-		for dir := range seq {
-			if !strings.Contains(dir.getRooted(), "$ORIGIN") {
-				continue
-			}
-			dir.rootPath = strings.Replace(dir.getRooted(), "$ORIGIN", origin.getRooted(), -1)
-			dir.realPath = ""
-			check(dir.fill())
-			if !yield(dir) {
-				return
-			}
+	return seqMap(seq, func(dir multiPath) (multiPath, bool) {
+		if !strings.Contains(dir.getRooted(), "$ORIGIN") {
+			return dir, true
 		}
-	}
+		dir.rootPath = strings.Replace(dir.getRooted(), "$ORIGIN", origin.getRooted(), -1)
+		dir.realPath = ""
+		check(dir.fill())
+		return dir, true
+	})
 }
 
 func readRunPath(f *elf.File, root string) iter.Seq[multiPath] {
-
 	for _, symTag := range []elf.DynTag{elf.DT_RUNPATH, elf.DT_RPATH} {
 		runpath, err := f.DynString(symTag)
 		if err == nil && len(runpath) != 0 {
@@ -271,13 +265,7 @@ func slashSoname(soname, root string) iter.Seq[multiPath] {
 }
 
 func mpToRooted(seq iter.Seq[multiPath], soname string) iter.Seq[string] {
-	return func(yield func(string) bool) {
-		for dir := range seq {
-			if !yield(filepath.Join(dir.getRooted(), soname)) {
-				return
-			}
-		}
-	}
+	return seqMap(seq, func(dir multiPath) (string, bool) { return filepath.Join(dir.getRooted(), soname), true })
 }
 
 func lddSym(options *parseOptions) (*LddResults, error) {

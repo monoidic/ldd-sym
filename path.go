@@ -13,12 +13,12 @@ import (
 func uniqExistsPath(paths iter.Seq[multiPath]) iter.Seq[multiPath] {
 	seen := newSet[string]()
 	return seqMap(paths, func(path multiPath) (multiPath, bool) {
-		rooted := path.getRooted()
-		if seen.contains(rooted) {
+		realPath := path.getReal()
+		if seen.contains(realPath) {
 			return path, false
 		}
-		seen.add(rooted)
-		return path, pathExists(rooted)
+		seen.add(realPath)
+		return path, pathExists(realPath)
 	})
 }
 

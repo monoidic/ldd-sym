@@ -69,76 +69,79 @@ func getSearchDirCachedAndroid(root string) iter.Seq[multiPath] {
 }
 
 func parseLdSoConfFile(filename multiPath, root string) iter.Seq[multiPath] {
-	return _parseLdSoConfFile(filename, newSet[string](), root)
-}
-
-func _parseLdSoConfFile(filename multiPath, seenConfs set[string], root string) iter.Seq[multiPath] {
 	return func(yield func(multiPath) bool) {
-		if seenConfs.contains(filename.getRooted()) {
-			return
-		}
-		seenConfs.add(filename.getRooted())
-
 		// might not exist on non-glibc systems
-		ldSoConf, err := os.ReadFile(filename.getReal())
-		if err != nil {
+		if !pathExists(filename.getReal()) {
 			return
 		}
 
-		for _, line := range bytes.Split(ldSoConf, []byte("\n")) {
-			line = bytes.Trim(line, " \t\r")
-			if len(line) == 0 || line[0] == '#' {
+		seenConfs := newSet[string]()
+		var pathstack stack[multiPath]
+		pathstack.push(filename)
+
+		for {
+			filename, ok := pathstack.pop()
+			if !ok {
+				break
+			}
+			if seenConfs.contains(filename.getRooted()) {
 				continue
 			}
-			if !bytes.HasPrefix(line, []byte("include")) {
-				path := string(line)
+			seenConfs.add(filename.getRooted())
+
+			ldSoConf := check1(os.ReadFile(filename.getReal()))
+
+			for _, line := range bytes.Split(ldSoConf, []byte("\n")) {
+				line = bytes.Trim(line, " \t\r")
+				if len(line) == 0 || line[0] == '#' {
+					continue
+				}
+				if !bytes.HasPrefix(line, []byte("include")) {
+					path := string(line)
+					mp := multiPath{
+						rootPath:  path,
+						root:      root,
+						mustExist: true,
+					}
+					err := mp.fill()
+					if err != nil {
+						continue
+					}
+					if !yield(mp) {
+						return
+					}
+					continue
+				}
+
+				path := string(line[8:])
+				if !filepath.IsAbs(path) {
+					path = filepath.Join(filepath.Dir(filename.getRooted()), path)
+				}
+
 				mp := multiPath{
 					rootPath:  path,
 					root:      root,
-					mustExist: true,
+					mustExist: false,
 				}
 				err := mp.fill()
 				if err != nil {
 					continue
 				}
-				if !yield(mp) {
-					return
+
+				filenames, err := filepath.Glob(mp.getReal())
+				if err != nil {
+					continue
 				}
-				continue
-			}
 
-			path := string(line[8:])
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(filepath.Dir(filename.getRooted()), path)
-			}
-
-			mp := multiPath{
-				rootPath:  path,
-				root:      root,
-				mustExist: false,
-			}
-			err := mp.fill()
-			if err != nil {
-				continue
-			}
-
-			filenames, err := filepath.Glob(mp.getReal())
-			if err != nil {
-				continue
-			}
-
-			for _, filename := range filenames {
-				mp := multiPath{
-					realPath:  filename,
-					root:      root,
-					mustExist: true,
-				}
-				err := mp.fill()
-				if err == nil {
-					for e := range _parseLdSoConfFile(mp, seenConfs, root) {
-						if !yield(e) {
-							return
-						}
+				for _, filename := range filenames {
+					mp := multiPath{
+						realPath:  filename,
+						root:      root,
+						mustExist: true,
+					}
+					err := mp.fill()
+					if err == nil {
+						pathstack.push(mp)
 					}
 				}
 			}

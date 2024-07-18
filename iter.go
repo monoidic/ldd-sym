@@ -47,17 +47,13 @@ func seqToSet[T comparable](seq iter.Seq[T]) set[T] {
 
 func uniq[T comparable](seq iter.Seq[T]) iter.Seq[T] {
 	seen := newSet[T]()
-	return func(yield func(T) bool) {
-		for e := range seq {
-			if seen.contains(e) {
-				continue
-			}
-			seen.add(e)
-			if !yield(e) {
-				return
-			}
+	return seqMap(seq, func(e T) (T, bool) {
+		if seen.contains(e) {
+			return e, false
 		}
-	}
+		seen.add(e)
+		return e, true
+	})
 }
 
 func seqMap[T any, V any](seq iter.Seq[T], f func(T) (V, bool)) iter.Seq[V] {

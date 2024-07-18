@@ -36,6 +36,10 @@ func (s *stack[T]) pushMultipleRev(l []T) {
 	s.l = append(s.l, l...)
 }
 
+func (s *stack[T]) push(e T) {
+	s.l = append(s.l, e)
+}
+
 func (s *stack[T]) pop() (T, bool) {
 	var next T
 	if len(s.l) == 0 {

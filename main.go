@@ -215,6 +215,10 @@ func getSyms(path multiPath, base *baseInfo) (syms, sonames []string, runpath []
 
 	dynSyms, err := f.DynamicSymbols()
 	if err != nil {
+		if err.Error() == "no symbol section" {
+			// treat as empty
+			return nil, nil, nil, true, nil
+		}
 		return nil, nil, nil, false, fmt.Errorf("getSyms dynsyms: %w", err)
 	}
 

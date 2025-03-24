@@ -104,6 +104,7 @@ type baseInfo struct {
 	symnameToSonames map[string][]string
 	sonamePaths      map[string][]multiPath
 	unneededSonames  []string
+	interpPath       string
 
 	options *parseOptions
 	machine elf.Machine

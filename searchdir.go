@@ -5,21 +5,22 @@ import (
 	"iter"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
 var searchDirCached []multiPath
 
-func getSearchdirs(runpath []multiPath, options *parseOptions) iter.Seq[multiPath] {
+func getSearchdirs(runpath []multiPath, options *parseOptions) []multiPath {
 	if searchDirCached != nil {
-		ret := concatSeq(sliceToSeq(runpath), sliceToSeq(searchDirCached))
+		ret := concatSeq(slices.Values(runpath), slices.Values(searchDirCached))
 		ret = uniqExistsPath(ret)
-		return ret
+		return slices.Collect(ret)
 	}
 
-	var seq iter.Seq[multiPath]
+	seq := emptySeq[multiPath]
 	if options.ldLibraryPath != "" {
-		seq = concatSeq(seq, rootedToMultiPath(sliceToSeq(strings.Split(options.ldLibraryPath, ":")), options.root, true))
+		seq = concatSeq(seq, rootedToMultiPath(slices.Values(strings.Split(options.ldLibraryPath, ":")), options.root, true))
 	}
 
 	if options.std {
@@ -30,7 +31,10 @@ func getSearchdirs(runpath []multiPath, options *parseOptions) iter.Seq[multiPat
 		seq = concatSeq(seq, getSearchDirCachedAndroid(options.root))
 	}
 
-	searchDirCached = collect(uniqExistsPath(seq))
+	searchDirCached = slices.Collect(uniqExistsPath(seq))
+	if searchDirCached == nil {
+		searchDirCached = []multiPath{}
+	}
 	return getSearchdirs(runpath, options)
 }
 
@@ -43,7 +47,7 @@ func getSearchDirCachedStd(root string) iter.Seq[multiPath] {
 		"/usr/local/lib64", "/usr/local/lib",
 	}
 
-	ret := rootedToMultiPath(sliceToSeq(paths), root, true)
+	ret := rootedToMultiPath(slices.Values(paths), root, true)
 
 	mp := multiPath{
 		rootPath:  "/etc/ld.so.conf",
@@ -65,7 +69,7 @@ func getSearchDirCachedAndroid(root string) iter.Seq[multiPath] {
 		"/vendor/lib64", "/vendor/lib",
 	}
 
-	return rootedToMultiPath(sliceToSeq(paths), root, true)
+	return rootedToMultiPath(slices.Values(paths), root, true)
 }
 
 func parseLdSoConfFile(filename multiPath, root string) iter.Seq[multiPath] {

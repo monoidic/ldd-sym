@@ -33,21 +33,52 @@ func parseBase(options *parseOptions) (*baseInfo, error) {
 		return nil, fmt.Errorf("parseBase DT_NEEDED: %w", err)
 	}
 
-	syms := collect(getDynSyms(sliceToSeq(dynSyms), options))
-	runpath := collect(getRunPath(f, options.elfPath))
+	syms := getDynSyms(slices.Values(dynSyms), options)
+	runpath := getRunPath(f, options.elfPath)
 
-	return &baseInfo{
+	bi := &baseInfo{
 		syms:    syms,
 		sonames: sonames,
 		runpath: runpath,
 		options: options,
 		machine: f.Machine,
 		class:   f.Class,
-	}, nil
+	}
+	bi.getInterp(f)
+
+	return bi, nil
 }
 
-func getDynSyms(seq iter.Seq[elf.Symbol], options *parseOptions) iter.Seq[string] {
-	return seqMap(seq, func(sym elf.Symbol) (string, bool) {
+func (base *baseInfo) getInterp(f *elf.File) {
+	var hdr elf.ProgHeader
+	var found bool
+	for _, prog := range f.Progs {
+		if prog.ProgHeader.Type == elf.PT_INTERP {
+			hdr = prog.ProgHeader
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return
+	}
+
+	off := hdr.Off
+	// strip null terminator
+	sz := hdr.Memsz - 1
+
+	rawF := check1(os.Open(base.options.elfPath.getReal()))
+	defer rawF.Close()
+	strBuf := make([]byte, sz)
+	check1(rawF.ReadAt(strBuf, int64(off)))
+
+	interp := string(strBuf)
+	base.interpPath = interp
+}
+
+func getDynSyms(seq iter.Seq[elf.Symbol], options *parseOptions) []string {
+	return slices.Collect(seqMap(seq, func(sym elf.Symbol) (string, bool) {
 		stt := elf.ST_TYPE(sym.Info)
 		isFunc := stt == elf.STT_FUNC
 		isObj := stt == elf.STT_OBJECT
@@ -70,10 +101,10 @@ func getDynSyms(seq iter.Seq[elf.Symbol], options *parseOptions) iter.Seq[string
 		}
 
 		return sym.Name, true
-	})
+	}))
 }
 
-func getRunPath(f *elf.File, fPath multiPath) iter.Seq[multiPath] {
+func getRunPath(f *elf.File, fPath multiPath) []multiPath {
 	origin := multiPath{
 		rootPath:  filepath.Dir(fPath.getRooted()),
 		root:      fPath.root,
@@ -86,7 +117,7 @@ func getRunPath(f *elf.File, fPath multiPath) iter.Seq[multiPath] {
 	dirs = originize(dirs, origin)
 	dirs = uniqExistsPath(dirs)
 
-	return dirs
+	return slices.Collect(dirs)
 }
 
 func originize(seq iter.Seq[multiPath], origin multiPath) iter.Seq[multiPath] {
@@ -105,7 +136,7 @@ func readRunPath(f *elf.File, root string) iter.Seq[multiPath] {
 	for _, symTag := range []elf.DynTag{elf.DT_RUNPATH, elf.DT_RPATH} {
 		runpath, err := f.DynString(symTag)
 		if err == nil && len(runpath) != 0 {
-			return rootedToMultiPath(sliceToSeq(strings.Split(runpath[0], ":")), root, true)
+			return rootedToMultiPath(slices.Values(strings.Split(runpath[0], ":")), root, true)
 		}
 	}
 
@@ -114,7 +145,7 @@ func readRunPath(f *elf.File, root string) iter.Seq[multiPath] {
 
 func (base *baseInfo) getSymMatches(searchdirs []multiPath) error {
 	base.symnameToSonames = make(map[string][]string, len(base.syms))
-	requiredSymnames := seqToSet(sliceToSeq(base.syms))
+	requiredSymnames := seqToSet(slices.Values(base.syms))
 
 	seenSonames := newSet[string]()
 	var sonameQueue queue[sonameWithSearchdirs]
@@ -130,6 +161,17 @@ func (base *baseInfo) getSymMatches(searchdirs []multiPath) error {
 	unneededSonames := slices.Clone(base.sonames)
 
 	sonamePaths := make(map[string][]multiPath)
+
+	if base.interpPath != "" {
+		mp := multiPath{
+			rootPath:  base.interpPath,
+			root:      base.options.root,
+			mustExist: true,
+		}
+		check(mp.fill())
+		soname := filepath.Base(base.interpPath)
+		sonamePaths[soname] = append(sonamePaths[soname], mp)
+	}
 
 	var allSonames []string
 
@@ -147,7 +189,7 @@ func (base *baseInfo) getSymMatches(searchdirs []multiPath) error {
 		sonameNeeded := false
 		searchdirs = element.searchdirs
 
-		for path := range getSonamePaths(soname, base.options.root, sliceToSeq(searchdirs)) {
+		for path := range getSonamePaths(soname, base.options.root, slices.Values(searchdirs)) {
 			syms, sonames, runpath, archMatch, err := getSyms(path, base)
 			if err != nil {
 				return fmt.Errorf("getSymMatches: %w", err)
@@ -165,7 +207,7 @@ func (base *baseInfo) getSymMatches(searchdirs []multiPath) error {
 				if !seenSonames.contains(soname) {
 					sonameQueue.push(sonameWithSearchdirs{
 						soname:     soname,
-						searchdirs: collect(getSearchdirs(runpath, base.options)),
+						searchdirs: getSearchdirs(runpath, base.options),
 					})
 					seenSonames.add(soname)
 				}
@@ -222,7 +264,7 @@ func getSyms(path multiPath, base *baseInfo) (syms, sonames []string, runpath []
 		return nil, nil, nil, false, fmt.Errorf("getSyms dynsyms: %w", err)
 	}
 
-	syms = collect(uniq(func(yield func(string) bool) {
+	syms = uniq(func(yield func(string) bool) {
 		for _, sym := range dynSyms {
 			if sym.Section != elf.SHN_UNDEF {
 				if !yield(sym.Name) {
@@ -230,13 +272,13 @@ func getSyms(path multiPath, base *baseInfo) (syms, sonames []string, runpath []
 				}
 			}
 		}
-	}))
+	})
 
 	sonames, err = f.DynString(elf.DT_NEEDED)
 	if err != nil {
 		return nil, nil, nil, false, fmt.Errorf("getSyms DynString: %w", err)
 	}
-	runpath = collect(getRunPath(f, path))
+	runpath = getRunPath(f, path)
 
 	return syms, sonames, runpath, true, nil
 }
@@ -292,7 +334,7 @@ func lddSym(options *parseOptions) (*LddResults, error) {
 		return nil, fmt.Errorf("lddSym parseBase: %w", err)
 	}
 
-	searchdirs := collect(getSearchdirs(base.runpath, base.options))
+	searchdirs := getSearchdirs(base.runpath, base.options)
 
 	err = base.getSymMatches(searchdirs)
 	if err != nil {
@@ -348,8 +390,9 @@ func (lddRes *LddResults) print() {
 	}
 
 	for _, soname := range lddRes.Sonames {
-		paths := lddRes.SonamePaths[soname]
-		fmt.Printf("%s: %s\n", soname, strings.Join(collect(multiPathToRooted(sliceToSeq(paths))), ", "))
+		pathsSl := lddRes.SonamePaths[soname]
+		paths := strings.Join(multiPathToRooted(slices.Values(pathsSl)), ", ")
+		fmt.Printf("%s: %s\n", soname, paths)
 	}
 
 	if !(len(lddRes.UnneededSonames) > 0 || len(lddRes.UndefinedSyms) > 0) {

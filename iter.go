@@ -1,14 +1,9 @@
 package main
 
-import "iter"
-
-func collect[T any](seq iter.Seq[T]) []T {
-	var ret []T
-	for e := range seq {
-		ret = append(ret, e)
-	}
-	return ret
-}
+import (
+	"iter"
+	"slices"
+)
 
 func emptySeq[T any](yield func(T) bool) {}
 
@@ -27,16 +22,6 @@ func concatSeq[T any](seqs ...iter.Seq[T]) iter.Seq[T] {
 	}
 }
 
-func sliceToSeq[T any](sl []T) iter.Seq[T] {
-	return func(yield func(T) bool) {
-		for _, e := range sl {
-			if !yield(e) {
-				return
-			}
-		}
-	}
-}
-
 func seqToSet[T comparable](seq iter.Seq[T]) set[T] {
 	s := newSet[T]()
 	for e := range seq {
@@ -45,15 +30,15 @@ func seqToSet[T comparable](seq iter.Seq[T]) set[T] {
 	return s
 }
 
-func uniq[T comparable](seq iter.Seq[T]) iter.Seq[T] {
+func uniq[T comparable](seq iter.Seq[T]) []T {
 	seen := newSet[T]()
-	return seqMap(seq, func(e T) (T, bool) {
+	return slices.Collect(seqMap(seq, func(e T) (T, bool) {
 		if seen.contains(e) {
 			return e, false
 		}
 		seen.add(e)
 		return e, true
-	})
+	}))
 }
 
 func seqMap[T any, V any](seq iter.Seq[T], f func(T) (V, bool)) iter.Seq[V] {

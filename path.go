@@ -118,8 +118,8 @@ func rootedToMultiPath(seq iter.Seq[string], root string, mustExist bool) iter.S
 	})
 }
 
-func multiPathToRooted(seq iter.Seq[multiPath]) iter.Seq[string] {
-	return seqMap(seq, func(mp multiPath) (string, bool) { return mp.getRooted(), true })
+func multiPathToRooted(seq iter.Seq[multiPath]) []string {
+	return slices.Collect(seqMap(seq, func(mp multiPath) (string, bool) { return mp.getRooted(), true }))
 }
 
 func pathExists(path string) bool {
